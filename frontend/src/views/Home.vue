@@ -1,13 +1,7 @@
 <template>
-	<h1>This is PlateVision</h1>
+	<h1 class="home-title">This is PlateVision</h1>
 </template>
 
-<script lang="ts">
-import { defineComponent } from 'vue'
+<script lang="ts" src="./Home.ts"></script>
 
-export default defineComponent({
-	name: 'Home'
-})
-</script>
-
-<style lang="scss" scoped></style>
+<style lang="scss" scoped src="../assets/styles/Home.scss"></style>

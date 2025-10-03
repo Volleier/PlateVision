@@ -1,0 +1,47 @@
+
+
+.app-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.app-header {
+  background: #0059ff;
+  color: #ffffff;
+  padding: 0.5rem 0; // reduced header height
+
+  .container {
+    justify-content: flex-start;
+    padding: 0 1rem;
+  }
+}
+
+.container {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+.logo {
+  margin: 0;
+}
+
+.app-main {
+  flex: 1 0 auto;
+  padding: 2rem 0;
+  background: #ffffff;
+}
+
+.app-footer {
+  padding: 1rem 0;
+  text-align: center;
+  background: #eef2f7;
+}
+
+.nav a {
+  color: rgba(255, 255, 255, 0.95);
+  text-decoration: none;
+  margin-left: 1rem;
+}

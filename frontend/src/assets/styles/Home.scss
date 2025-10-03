@@ -1,0 +1,16 @@
+
+
+
+.home-title {
+  font-size: 1.75rem;
+  color: #ffffff  ;
+  margin: 0;
+  padding: 0.5rem 0;
+  text-align: left;
+
+  // responsive tweak
+  @media (max-width: 600px) {
+    font-size: 1.25rem;
+    padding: 0.25rem 0;
+  }
+}
