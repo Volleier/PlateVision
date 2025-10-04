@@ -7,12 +7,14 @@
 }
 
 .app-header {
-  background: #0059ff;
+  background: hsl(219, 100%, 67%);
   color: #ffffff;
-  padding: 0.5rem 0; // reduced header height
+  padding: 0.05rem 0;
 
   .container {
-    justify-content: flex-start;
+    display: flex;
+    justify-content: center;
+    align-items: center;
     padding: 0 1rem;
   }
 }
