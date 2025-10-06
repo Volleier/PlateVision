@@ -33,3 +33,6 @@ backend/static/uploads/
 backend/static/results/
 backend/static/models/
 data/models/
+
+## Data for training
+data
