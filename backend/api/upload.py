@@ -53,4 +53,22 @@ def upload():
         return jsonify({"error": "save failed", "detail": str(e)}), 500
 
     file_url = url_for("static", filename=f"uploads/{filename}", _external=True)
-    return jsonify({"filename": filename, "url": file_url}), 200
+
+    try:
+        from .processing import processing_image
+        result = processing_image(save_path)
+    except Exception as e:
+        current_app.logger.exception("detection failed")
+        return jsonify({
+            "filename": filename,
+            "url": file_url,
+            "detection": None,
+            "error": "detection failed",
+            "detail": str(e)
+        }), 500
+
+    return jsonify({
+        "filename": filename,
+        "url": file_url,
+        "detection": result
+    }), 200
