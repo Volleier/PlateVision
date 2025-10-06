@@ -1,110 +1,92 @@
-import { defineComponent, ref, onUnmounted } from 'vue'
-
-const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5MB
+import { defineComponent, ref } from 'vue';
 
 export default defineComponent({
-    name: 'HomeView',
-    setup() {
-        const previewSrc = ref<string | null>(null)
-        const isDragging = ref(false)
-        const errorMsg = ref<string | null>(null)
-        const fileInput = ref<HTMLInputElement | null>(null)
-        let currentObjectUrl: string | null = null
-        let dragCounter = 0
+  name: 'HomeView',
+  setup() {
+    const fileInput = ref<HTMLInputElement | null>(null);
+    const isDragging = ref(false);
+    const selectedFile = ref<File | null>(null);
+    const previewSrc = ref<string>('');
+    const errorMsg = ref<string>('');
+    const uploadedUrl = ref<string>('');
 
-        function revokeCurrentUrl() {
-            if (currentObjectUrl) {
-                URL.revokeObjectURL(currentObjectUrl)
-                currentObjectUrl = null
-            }
-        }
-
-        function validateFile(file: File) {
-            if (!file.type.startsWith('image/')) {
-                return 'Please upload an image file.'
-            }
-            if (file.size > MAX_FILE_SIZE) {
-                return 'File is too large. Max 5MB allowed.'
-            }
-            return null
-        }
-
-        function processFile(file: File | null) {
-            errorMsg.value = null
-            if (!file) {
-                revokeCurrentUrl()
-                previewSrc.value = null
-                return
-            }
-
-            const validationError = validateFile(file)
-            if (validationError) {
-                errorMsg.value = validationError
-                return
-            }
-
-            revokeCurrentUrl()
-            currentObjectUrl = URL.createObjectURL(file)
-            previewSrc.value = currentObjectUrl
-        }
-
-        function onFileChange(e: Event) {
-            const input = e.target as HTMLInputElement
-            if (!input.files || input.files.length === 0) {
-                processFile(null)
-                return
-            }
-            processFile(input.files[0])
-        }
-
-        function openFile() {
-            fileInput.value?.click()
-        }
-
-        function onDragOver(e: DragEvent) {
-            e.dataTransfer && (e.dataTransfer.dropEffect = 'copy')
-            isDragging.value = true
-        }
-
-        function onDragEnter() {
-            dragCounter++
-            isDragging.value = true
-        }
-
-        function onDragLeave() {
-            dragCounter--
-            if (dragCounter <= 0) {
-                isDragging.value = false
-                dragCounter = 0
-            }
-        }
-
-        function onDrop(e: DragEvent) {
-            dragCounter = 0
-            isDragging.value = false
-            const dt = e.dataTransfer
-            if (!dt || !dt.files || dt.files.length === 0) {
-                return
-            }
-            const file = dt.files[0]
-            processFile(file)
-        }
-
-        onUnmounted(() => {
-            revokeCurrentUrl()
-        })
-
-        return {
-            previewSrc,
-            onFileChange,
-            openFile,
-            isDragging,
-            onDragOver,
-            onDragEnter,
-            onDragLeave,
-            onDrop,
-            fileInput,
-            errorMsg
-        }
+    function openFile() {
+      fileInput.value?.click();
     }
-})
+
+    function onFileChange(e: Event) {
+      const input = e.target as HTMLInputElement;
+      const f = input.files?.[0] ?? null;
+      setFile(f);
+    }
+
+    function onDragOver(e: DragEvent) { e.dataTransfer && (e.dataTransfer.dropEffect = 'copy'); }
+    function onDragEnter() { isDragging.value = true; }
+    function onDragLeave() { isDragging.value = false; }
+
+    function onDrop(e: DragEvent) {
+      isDragging.value = false;
+      const f = e.dataTransfer?.files?.[0] ?? null;
+      setFile(f);
+    }
+
+    function setFile(f: File | null) {
+      errorMsg.value = '';
+      uploadedUrl.value = '';
+      selectedFile.value = f;
+      if (!f) {
+        previewSrc.value = '';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => { previewSrc.value = String(reader.result || ''); };
+      reader.onerror = () => { errorMsg.value = 'Cannot read file'; previewSrc.value = ''; };
+      reader.readAsDataURL(f);
+    }
+
+    async function uploadFile() {
+      errorMsg.value = '';
+      if (!selectedFile.value) {
+        errorMsg.value = 'No file selected';
+        return;
+      }
+      try {
+        const form = new FormData();
+        form.append('image', selectedFile.value); // 与后端约定字段名 'image'
+
+        const res = await fetch('http://localhost:5000/api/upload', {
+          method: 'POST',
+          body: form,
+        });
+
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          let json = null;
+          try { json = JSON.parse(text); } catch { json = { error: text || res.statusText }; }
+          throw new Error(json.error || json.detail || 'upload failed');
+        }
+
+        const data = await res.json();
+        uploadedUrl.value = data.url || data.path || '';
+      } catch (err: any) {
+        errorMsg.value = String(err.message ?? err);
+      }
+    }
+
+    return {
+      fileInput,
+      isDragging,
+      selectedFile,
+      previewSrc,
+      errorMsg,
+      uploadedUrl,
+      openFile,
+      onFileChange,
+      onDragOver,
+      onDragEnter,
+      onDragLeave,
+      onDrop,
+      uploadFile,
+    };
+  },
+});

@@ -7,7 +7,16 @@
 					@dragenter.prevent="onDragEnter" @dragleave.prevent="onDragLeave" @drop.prevent="onDrop">
 					<p class="home-title">Upload Image</p>
 					<p class="upload-instruction">Drag the image here, or click to select</p>
-					<button class="upload-btn" @click.prevent="openFile()">Select Image</button>
+
+					<!-- 按钮行：选择 + 上传 -->
+					<div class="upload-actions">
+						<button class="upload-btn" @click.prevent="openFile()">Select Image</button>
+						<button class="upload-btn upload-btn--send" @click.prevent="uploadFile()"
+							:disabled="!selectedFile">
+							Upload
+						</button>
+					</div>
+
 					<input ref="fileInput" id="fileInput" type="file" accept="image/*" style="display:none"
 						@change="onFileChange" />
 					<div class="upload-preview">

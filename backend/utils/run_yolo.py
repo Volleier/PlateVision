@@ -17,7 +17,7 @@ if torch.cuda.is_available():
 
 
 # Load model (local .pt file)
-model = YOLO("e:/Project/PlateVision/runs/detect/train7/weights/best.pt")
+model = YOLO("backend/static/models/best.pt")
 
 # New: View model class mapping
 try:
@@ -40,11 +40,11 @@ device = 0 if torch.cuda.is_available() else "cpu"
 
 # If plate class indices are found, use the classes parameter to detect only plates
 if plate_idxs:
-    results = model.predict(source="e:/Project/PlateVision/data/test_images", device=device, save=True, classes=plate_idxs, conf=0.25)
+    results = model.predict(source="data/test_images", device=device, save=True, classes=plate_idxs, conf=0.25)
 else:
     # No plate class found, the model may not be trained for plates; need to change weights or retrain
     print("No plate class found in model.names — the model likely isn't trained for plates.")
-    results = model.predict(source="e:/Project/PlateVision/data/test_images", device=device, save=True, conf=0.25)
+    results = model.predict(source="data/test_images", device=device, save=True, conf=0.25)
 
 for r in results:
     print(r.path)
