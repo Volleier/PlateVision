@@ -8,6 +8,7 @@ import json
 from PIL import Image
 import numpy as np
 import sys
+from typing import Optional
 
 try:
     from ultralytics import YOLO
@@ -15,12 +16,13 @@ except Exception as e:
     print("Please install ultralytics: pip install ultralytics. Error:", e)
     raise
 
-def detect_all(conf: float = 0.25, imgsz: int = 640):
+def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path] = None, input_path: Optional[Path] = None):
     repo_root = Path(__file__).resolve().parents[2]  # e:\Project\PlateVision
     static_dir = repo_root / "backend" / "static"
     model_path = static_dir / "models" / "best.pt"
     uploads_dir = static_dir / "uploads"
-    results_dir = static_dir / "results"
+    # 如果外部传入 results_dir，则使用之；否则回退到默认 yolo_detect
+    results_dir = Path(results_dir) if results_dir else static_dir / "results" / "yolo_detect"
 
     if not model_path.exists():
         print("Model file not found:", model_path)
@@ -37,10 +39,17 @@ def detect_all(conf: float = 0.25, imgsz: int = 640):
         raise
 
     exts = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
-    imgs = sorted([p for p in uploads_dir.iterdir() if p.suffix.lower() in exts and p.is_file()])
-    if not imgs:
-        print("No images found in:", uploads_dir)
-        return
+    if input_path:
+        # 处理单张传入图片（无需复制到 uploads）
+        if not Path(input_path).exists() or Path(input_path).suffix.lower() not in exts:
+            print("Input image not found or unsupported:", input_path)
+            return
+        imgs = [Path(input_path)]
+    else:
+        imgs = sorted([p for p in uploads_dir.iterdir() if p.suffix.lower() in exts and p.is_file()])
+        if not imgs:
+            print("No images found in:", uploads_dir)
+            return
 
     for img_path in imgs:
         try:
