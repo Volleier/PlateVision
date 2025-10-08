@@ -166,6 +166,9 @@ def crop_from_paths(image_path: str, result_json_path: str, out_dir: Optional[st
         out_path = out_dir_p / out_name
         crop_img.save(out_path, quality=95)
         saved.append(str(out_path))
+        
+        print("All done. Crop results saved in:", out_dir_p)
+
     return saved
 
 def crop_from_detector_result(result_json_path: str, images_dir: Optional[str] = None,

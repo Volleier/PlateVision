@@ -125,4 +125,4 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
         except Exception as e:
             print(f"Error processing image {img_path.name}:", e)
 
-    print("All done. Results saved in:", results_dir)
+    print("All done. Detector results saved in:", results_dir)

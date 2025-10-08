@@ -58,6 +58,27 @@ def processing_image(file_path: str, out_dir: Optional[str] = None, conf: float 
                                                padding=0.08,
                                                min_area=64)
             data["internal"]["crops"] = saved
+
+            # 调用 OCR 对每个裁剪结果进行识别（使用 backend/services/OCR.py 中的 recognize_plate_from_path）
+            try:
+                from services import OCR as ocr_service  # backend/services/OCR.py
+            except Exception:
+                ocr_service = None
+
+            if ocr_service is not None:
+                ocr_results = []
+                for crop_path in saved:
+                    try:
+                        plate_text, conf = ocr_service.recognize_plate_from_path(str(crop_path), engine='easyocr')
+                        ocr_results.append({"path": str(crop_path), "text": plate_text, "conf": conf})
+                        # 在控制台打印保存的结果
+                        print(f"OCR: {crop_path} -> {plate_text} (conf={conf})")
+                    except Exception as e:
+                        ocr_results.append({"path": str(crop_path), "error": str(e)})
+                        print(f"OCR error for {crop_path}: {e}")
+                data["internal"]["ocr_results"] = ocr_results
+            else:
+                data["internal"]["ocr_error"] = "easyocr not available or import failed"
         except Exception as e:
             data["internal"]["crops_error"] = str(e)
     else:
