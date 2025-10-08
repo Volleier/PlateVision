@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, cast
 
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
@@ -56,7 +56,7 @@ def add_plate(image_path: str, crop_path: Optional[str] = None,
         session.add(rec)
         session.commit()
         session.refresh(rec)
-        return int(rec.id)
+        return cast(int, rec.id)
     except Exception:
         session.rollback()
         raise
@@ -74,17 +74,18 @@ def add_plates_bulk(records: List[Dict[str, Any]]) -> List[int]:
     try:
         objs = []
         for r in records:
+            val_conf = r.get("confidence")
             objs.append(PlateRecord(
                 image_path=str(r.get("image_path", "")),
                 crop_path=str(r.get("crop_path")) if r.get("crop_path") else None,
                 text=str(r.get("text")) if r.get("text") else None,
-                confidence=float(r.get("confidence")) if r.get("confidence") is not None else None
+                confidence=float(val_conf) if val_conf is not None else None
             ))
         session.add_all(objs)
         session.commit()
         for o in objs:
             session.refresh(o)
-            ids.append(int(o.id))
+            ids.append(cast(int, o.id))
         return ids
     except Exception:
         session.rollback()
@@ -104,11 +105,11 @@ def list_plates(limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         out = []
         for r in q.all():
             out.append({
-                "id": int(r.id),
+                "id": cast(int, r.id),
                 "image_path": r.image_path,
                 "crop_path": r.crop_path,
                 "text": r.text,
-                "confidence": float(r.confidence) if r.confidence is not None else None,
+                "confidence": float(cast(float, r.confidence)) if r.confidence is not None else None,
                 "created_at": r.created_at.isoformat() if r.created_at is not None else None
             })
         return out
@@ -124,11 +125,11 @@ def get_plate(plate_id: int) -> Optional[Dict[str, Any]]:
         if not r:
             return None
         return {
-            "id": int(r.id),
+            "id": cast(int, r.id),
             "image_path": r.image_path,
             "crop_path": r.crop_path,
             "text": r.text,
-            "confidence": float(r.confidence) if r.confidence is not None else None,
+            "confidence": float(cast(float, r.confidence)) if r.confidence is not None else None,
             "created_at": r.created_at.isoformat() if r.created_at is not None else None
         }
     finally:

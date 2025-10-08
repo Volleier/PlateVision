@@ -1,110 +1,121 @@
-.home-title {
-  font-size: 1.75rem;
-  color: #000000;
-  margin: 0;
-  padding: 0.5rem 0;
-  text-align: left;
-  margin-top: 0.5rem;
+@use 'sass:map' as map;
+@use './Button' as Button;
 
-  @media (max-width: 600px) {
-    font-size: 1.25rem;
-    padding: 0.25rem 0;
-  }
+$colors: (
+    dark: #004572,
+    mid:  #0079c9,
+    bright: #00bfff
+);
+
+@function color($key) {
+    @return map.get($colors, $key);
 }
 
-.home-root {
-  width: 100%;
-}
+$glow-1-start: rgba(3,114,199,0.14);
+$glow-1-mid:   rgba(3,114,199,0.04);
+$glow-2-start: rgba(0,191,255,0.10);
+$glow-2-mid:   rgba(0,191,255,0.03);
 
-.home-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr; 
-  gap: 1rem;
-  margin-top: 1rem;
+$text-grad: linear-gradient(90deg, #a6ddff 0%, #ffffff 50%, #9ccfff 100%);
+$bg-gradient: linear-gradient(
+    to top right,
+    #{color(dark)} 0%,
+    #{color(mid)} 40%,
+    #{color(bright)} 100%
+);
 
-  &__upload, &__preview {
-    background: #fff;
-    border: 1px solid rgba(0,0,0,0.06);
-    border-radius: 6px;
-    padding: 1rem;
-    min-height: 300px;
-  }
+$padding-y: 4.5rem;
+$padding-x: 2.5rem;
 
-  .upload-box, .preview-box {
-    height: 100%;
+@mixin center-column {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: flex-start; 
-    color: rgba(0,0,0,0.6);
-    padding-top: 1rem;
-  }
-
-  .upload-box .home-title, .preview-box .home-title {
-    align-self: center; 
-    text-align: center;
-    margin: 0 0 0.5rem 0;
-    width: 100%;
-  }
-
-  .upload-btn {
-    display: inline-block;
-    padding: 0.6rem 1rem;
-    background: #007bff;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    margin-top: 0.5rem;
-  }
-
-  .upload-instruction {
-    font-size: 0.95rem;
-    color: rgba(0,0,0,0.5);
-    margin: 0.25rem 0 0.5rem 0;
-  }
-
-  .upload-box.drag-over {
-    background: rgba(0, 123, 255, 0.04);
-    border: 1px dashed rgba(0,123,255,0.6);
-  }
-
-  .upload-preview {
-    width: 100%;
-    margin-top: 0.75rem;
-    display: flex;
-    align-items: center;
     justify-content: center;
-    min-height: 160px;
-    border: 1px solid rgba(0,0,0,0.03);
-    border-radius: 6px;
-    background: #fafafa;
-    padding: 0.5rem;
+    text-align: center;
+}
 
-    .placeholder {
-      color: rgba(0,0,0,0.35);
+.home-root {
+    position: relative;
+    box-sizing: border-box;
+    margin: 0;                       // ensure no global margin
+    width: 100%;
+    min-height: 100vh;               // viewport height
+    padding: $padding-y $padding-x;  // page padding
+    @include center-column;
+    overflow: hidden;
+    z-index: 1;                       // put content on top
+
+    // Full-page background: fixed pseudo-element covers viewport with gradient
+    &::before {
+        content: "";
+        position: fixed;
+        inset: 0; /* top:0; right:0; bottom:0; left:0; */
+        z-index: 0;
+        pointer-events: none;
+        background: $bg-gradient;
+        background-repeat: no-repeat;
+        background-size: cover;
+        will-change: transform;
     }
-  }
 
-  .preview-image {
-    max-width: 100%;
-    max-height: 80%;
-    object-fit: contain;
-    border-radius: 6px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-  }
+    // Two subtle soft light spots to add depth
+    &::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        background-image:
+            radial-gradient(30% 30% at 10% 80%, $glow-1-start 0%, $glow-1-mid 30%, transparent 60%),
+            radial-gradient(40% 40% at 90% 10%, $glow-2-start 0%, $glow-2-mid 35%, transparent 65%);
+        filter: blur(36px);
+        opacity: 0.95;
+    }
 
-  .placeholder {
-    color: rgba(0,0,0,0.35);
-  }
+    // Place immediate children on top of background layers
+    > * {
+        z-index: 1;
+    }
 
-  .error {
-    color: #b00020;
-    margin-top: 0.5rem;
-    font-size: 0.95rem;
-  }
+    .home-title {
+        margin: 0 0 1.5rem 0;
+        font-weight: 800;
+        font-size: clamp(3.6rem, 9vw, 7.2rem);
+        letter-spacing: -0.02em;
+        background: $text-grad;
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        color: transparent;
+        text-shadow: 0 10px 30px rgba(2, 10, 30, 0.22);
+    }
 
-  @media (max-width: 800px) {
-    grid-template-columns: 1fr;
-  }
+    .actions {
+        display: flex;
+        gap: 1rem;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-top: 0.9rem;
+    }
+
+    .btn {
+        @include Button.btn-common;
+
+        &.primary { @include Button.btn-variant(primary); }
+        &.secondary { @include Button.btn-variant(secondary); }
+
+        &:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 18px 50px rgba(2, 10, 30, 0.18);
+        }
+    }
+
+    // Responsive adjustments
+    @media (max-width: 480px) {
+        padding: 3.2rem 1rem;
+        .home-title { font-size: 2.2rem; }
+        .actions { gap: 0.6rem; }
+        .btn { padding: 0.6rem 1rem; font-size: 0.95rem; }
+    }
 }

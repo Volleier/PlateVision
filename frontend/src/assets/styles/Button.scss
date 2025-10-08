@@ -1,0 +1,35 @@
+@use 'sass:map' as map;
+
+$btn-primary: (start: #0b74ff, end: #00aaff);
+$btn-secondary: (
+    bg: rgba(255,255,255,0.96),
+    color: #073b6a,
+    border: 1px solid rgba(7,79,168,0.12)
+);
+
+@mixin btn-common {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.72rem 1.2rem;
+    border-radius: 12px;
+    font-weight: 700;
+    font-size: 1rem;
+    text-decoration: none;
+    cursor: pointer;
+    transition: transform .12s ease, box-shadow .12s ease, opacity .12s ease;
+    outline: none;
+    box-shadow: 0 10px 30px rgba(2, 10, 30, 0.12);
+}
+
+@mixin btn-variant($type) {
+    @if $type == primary {
+        background: linear-gradient(90deg, map.get($btn-primary, start), map.get($btn-primary, end));
+        color: #fff;
+        border: none;
+    } @else if $type == secondary {
+        background: map.get($btn-secondary, bg);
+        color: map.get($btn-secondary, color);
+        border: map.get($btn-secondary, border);
+    }
+}
