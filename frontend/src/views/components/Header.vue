@@ -5,14 +5,14 @@
 
             <!-- Split-action buttons -->
             <nav class="split-actions" role="navigation" aria-label="header actions">
-                <router-link to="/upload" class="split-half" :class="{ active: $route.path === '/upload' }"
-                    :aria-current="$route.path === '/upload' ? 'page' : null">
-                    <span class="label">Upload</span>
+                <router-link to="/upload-image" class="split-half" :class="{ active: $route.path === '/upload-image' }"
+                    :aria-current="$route.path === '/upload-image' ? 'page' : null">
+                    <span class="label">Upload Image</span>
                 </router-link>
 
-                <router-link to="/check" class="split-half" :class="{ active: $route.path === '/check' }"
-                    :aria-current="$route.path === '/check' ? 'page' : null">
-                    <span class="label">Check</span>
+                <router-link to="/upload-video" class="split-half" :class="{ active: $route.path === '/upload-video' }"
+                    :aria-current="$route.path === '/upload-video' ? 'page' : null">
+                    <span class="label">Upload Video</span>
                 </router-link>
             </nav>
         </div>

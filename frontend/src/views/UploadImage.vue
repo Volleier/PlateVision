@@ -6,12 +6,9 @@
                 <div class="upload-box" :class="{ 'drag-over': isDragging }" @dragover.prevent="onDragOver"
                     @dragenter.prevent="onDragEnter" @dragleave.prevent="onDragLeave" @drop.prevent="onDrop">
                     <p class="home-title">Upload Image</p>
-                    <p class="upload-instruction">Drag the image here, or click to select</p>
 
-                    <!-- 按钮行：选择 + 上传 -->
-                    <div class="upload-actions">
-                        <button class="upload-btn" @click.prevent="openFile()">Select Image</button>
-                        <button class="upload-btn upload-btn--send" @click.prevent="uploadFile()"
+                    <div class="upload-actions" @click.stop>
+                        <button class="upload-btn upload-btn--send" @click.stop.prevent="uploadFile()"
                             :disabled="!selectedFile">
                             Upload
                         </button>
@@ -19,10 +16,13 @@
 
                     <input ref="fileInput" id="fileInput" type="file" accept="image/*" style="display:none"
                         @change="onFileChange" />
-                    <div class="upload-preview">
+
+                    <!-- 仅保留图片预览区域响应点击，移除 wrapper 与 Enter 键处理 -->
+                    <div class="upload-preview" @click="openFile">
                         <img v-if="previewSrc" :src="previewSrc" alt="uploaded preview" class="preview-image" />
-                        <p v-else class="placeholder">No image uploaded</p>
+                        <p v-else class="placeholder">Drag the image here, or click here to select</p>
                     </div>
+
                     <p v-if="errorMsg" class="error">{{ errorMsg }}</p>
                 </div>
             </aside>
@@ -38,6 +38,6 @@
     </div>
 </template>
 
-<script lang="ts" src="../script/Check.ts"></script>
+<script lang="ts" src="../script/UploadImage.ts"></script>
 
-<style lang="scss" scoped src="../assets/styles/Check.scss"></style>
+<style lang="scss" scoped src="../assets/styles/UploadImage.scss"></style>

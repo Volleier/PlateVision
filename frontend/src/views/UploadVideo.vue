@@ -5,12 +5,12 @@
                 <!-- Image Upload Area -->
                 <div class="upload-box" :class="{ 'drag-over': isDragging }" @dragover.prevent="onDragOver"
                     @dragenter.prevent="onDragEnter" @dragleave.prevent="onDragLeave" @drop.prevent="onDrop">
-                    <p class="home-title">Upload Image</p>
-                    <p class="upload-instruction">Drag the image here, or click to select</p>
+                    <p class="home-title">Upload Video</p>
+                    <p class="upload-instruction">Drag the video here, or click to select</p>
 
                     <!-- 按钮行：选择 + 上传 -->
                     <div class="upload-actions">
-                        <button class="upload-btn" @click.prevent="openFile()">Select Image</button>
+                        <button class="upload-btn" @click.prevent="openFile()">Select Video</button>
                         <button class="upload-btn upload-btn--send" @click.prevent="uploadFile()"
                             :disabled="!selectedFile">
                             Upload
@@ -20,8 +20,9 @@
                     <input ref="fileInput" id="fileInput" type="file" accept="image/*" style="display:none"
                         @change="onFileChange" />
                     <div class="upload-preview">
-                        <img v-if="previewSrc" :src="previewSrc" alt="uploaded preview" class="preview-image" />
-                        <p v-else class="placeholder">No image uploaded</p>
+                        <video v-if="previewSrc" :src="previewSrc" alt="uploaded preview" class="preview-video"
+                            controls />
+                        <p v-else class="placeholder">No video uploaded</p>
                     </div>
                     <p v-if="errorMsg" class="error">{{ errorMsg }}</p>
                 </div>
@@ -38,6 +39,6 @@
     </div>
 </template>
 
-<script lang="ts" src="../script/Check.ts"></script>
+<script lang="ts" src="../script/UploadVideo.ts"></script>
 
-<style lang="scss" scoped src="../assets/styles/Check.scss"></style>
+<style lang="scss" scoped src="../assets/styles/UploadVideo.scss"></style>
