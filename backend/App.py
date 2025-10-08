@@ -13,6 +13,15 @@ def create_app():
     from api.upload import bp as upload_bp
     app.register_blueprint(upload_bp)
 
+    # 初始化数据库（启动时建表），通过 api 层封装
+    try:
+        from api import db_api
+        db_api.init_db()
+        print("DB initialized at startup")
+    except Exception as e:
+        # 不阻塞应用启动，记录到 stdout 方便调试
+        print("DB init failed at startup:", e)
+
     return app
 
 if __name__ == "__main__":

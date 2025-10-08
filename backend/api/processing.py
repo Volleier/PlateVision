@@ -59,9 +59,9 @@ def processing_image(file_path: str, out_dir: Optional[str] = None, conf: float 
                                                min_area=64)
             data["internal"]["crops"] = saved
 
-            # 调用 OCR 对每个裁剪结果进行识别（使用 backend/services/OCR.py 中的 recognize_plate_from_path）
+            # 调用 OCR 对每个裁剪结果进行识别（使用 backend/services/ocr.py 中的 recognize_plate_from_path）
             try:
-                from services import OCR as ocr_service  # backend/services/OCR.py
+                from services import ocr as ocr_service  # backend/services/ocr.py
             except Exception:
                 ocr_service = None
 
@@ -77,6 +77,18 @@ def processing_image(file_path: str, out_dir: Optional[str] = None, conf: float 
                         ocr_results.append({"path": str(crop_path), "error": str(e)})
                         print(f"OCR error for {crop_path}: {e}")
                 data["internal"]["ocr_results"] = ocr_results
+
+                # 新增：通过 api 层保存到数据库（不在 processing 中直接操作底层 db）
+                try:
+                    from api import db_api  # backend/api/db_api.py
+                    try:
+                        resp = db_api.save_ocr_results(unique_name, ocr_results)
+                        data["internal"]["db_save"] = resp
+                        print(f"DB save response: {resp}")
+                    except Exception as e:
+                        data["internal"]["db_save_error"] = f"save_ocr_results error: {e}"
+                except Exception as e:
+                    data["internal"]["db_save_error"] = f"db_api import failed: {e}"
             else:
                 data["internal"]["ocr_error"] = "easyocr not available or import failed"
         except Exception as e:
