@@ -77,18 +77,6 @@ def processing_image(file_path: str, out_dir: Optional[str] = None, conf: float 
                         ocr_results.append({"path": str(crop_path), "error": str(e)})
                         print(f"OCR error for {crop_path}: {e}")
                 data["internal"]["ocr_results"] = ocr_results
-
-                # 新增：通过 api 层保存到数据库（不在 processing 中直接操作底层 db）
-                try:
-                    from api import db_api  # backend/api/db_api.py
-                    try:
-                        resp = db_api.save_ocr_results(unique_name, ocr_results)
-                        data["internal"]["db_save"] = resp
-                        print(f"DB save response: {resp}")
-                    except Exception as e:
-                        data["internal"]["db_save_error"] = f"save_ocr_results error: {e}"
-                except Exception as e:
-                    data["internal"]["db_save_error"] = f"db_api import failed: {e}"
             else:
                 data["internal"]["ocr_error"] = "easyocr not available or import failed"
         except Exception as e:
