@@ -1,26 +1,18 @@
 .home-title {
   font-size: 1.75rem;
   color: #000000;
-  margin: 0;
+  margin: 0;      
   padding: 0.5rem 0;
   text-align: left;
-  margin-top: 0.5rem;
-
-  @media (max-width: 600px) {
-    font-size: 1.25rem;
-    padding: 0.25rem 0;
-  }
-}
-
-.home-root {
-  width: 100%;
+  margin-top: 0;
 }
 
 .home-grid {
   display: grid;
   grid-template-columns: 1fr 1fr; 
   gap: 1rem;
-  margin-top: 1rem;
+  margin-top: 1rem; 
+  padding-top: 0;
 
   &__upload, &__preview {
     background: #fff;
