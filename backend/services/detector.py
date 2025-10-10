@@ -19,7 +19,7 @@ except Exception as e:
 def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path] = None, input_path: Optional[Path] = None):
     repo_root = Path(__file__).resolve().parents[2]  # e:\Project\PlateVision
     static_dir = repo_root / "backend" / "static"
-    model_path = static_dir / "models" / "best.pt"
+    model_path = static_dir / "models" / "plate_best.pt"
     uploads_dir = static_dir / "uploads"
     # 如果外部传入 results_dir，则使用之；否则回退到默认 yolo_detect
     results_dir = Path(results_dir) if results_dir else static_dir / "results" / "yolo_detect"

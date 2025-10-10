@@ -79,6 +79,35 @@ def processing_image(file_path: str, out_dir: Optional[str] = None, conf: float 
                 data["internal"]["ocr_results"] = ocr_results
             else:
                 data["internal"]["ocr_error"] = "easyocr not available or import failed"
+
+            # 调用 number_detector 对裁剪结果进行识别，并把结果保存到 static/results/number
+            try:
+                try:
+                    from services import number_detector as number_detector_service  # backend/services/number_detector.py
+                except Exception:
+                    number_detector_service = None
+
+                if number_detector_service is not None:
+                    number_results_dir = results_root / "number"
+                    number_results_dir.mkdir(parents=True, exist_ok=True)
+                    # number_detector 会处理 crops 目录中的图像，传入 results_dir 让其将输出写到指定目录
+                    number_detector_service.detect_all(conf=conf, imgsz=imgsz, results_dir=number_results_dir, input_path=None)
+
+                    # 列出 number 目录下保存的图片和 json 并记录到返回数据，同时在控制台打印
+                    saved_imgs = sorted([str(p) for p in number_results_dir.iterdir() if p.is_file() and "_pred" in p.name])
+                    saved_jsons = sorted([str(p) for p in number_results_dir.iterdir() if p.is_file() and p.suffix.lower() == ".json"])
+                    data["internal"]["number_results"] = {"images": saved_imgs, "jsons": saved_jsons}
+
+                    print("Number detector results saved to:", str(number_results_dir))
+                    for p in saved_imgs + saved_jsons:
+                        print("  ", p)
+                else:
+                    data["internal"]["number_error"] = "number_detector not available or import failed"
+                    print("number_detector import failed or not available")
+            except Exception as e:
+                data["internal"]["number_error"] = str(e)
+                print("Number detector error:", e)
+
         except Exception as e:
             data["internal"]["crops_error"] = str(e)
     else:
