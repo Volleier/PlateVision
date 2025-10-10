@@ -2,9 +2,33 @@ from typing import Any, Dict, Optional
 from pathlib import Path
 import os
 import shutil
-import uuid
 import time
 import json
+
+def _fs_path_to_static_url(server_path: Optional[str]) -> Optional[str]:
+    """
+    把后端文件系统路径转换为前端可访问的 /static/... 相对 URL。
+    例如: e:\Project\PlateVision\backend\static\results\yolo_detect\img_pred.jpg
+    -> /static/results/yolo_detect/img_pred.jpg
+    若无法解析则返回 None。
+    """
+    if not server_path:
+        return None
+    p = Path(server_path)
+    try:
+        p = p.resolve()
+    except Exception:
+        p = Path(server_path)
+    repo_root = Path(__file__).resolve().parents[2]  # e:\Project\PlateVision
+    static_root = (repo_root / "backend" / "static").resolve()
+    try:
+        rel = p.relative_to(static_root)
+        return "/static/" + str(rel).replace("\\", "/")
+    except Exception:
+        s = str(server_path).replace("\\", "/")
+        if s.startswith("/static/"):
+            return s
+        return None
 
 def processing_image(file_path: str, out_dir: Optional[str] = None, conf: float = 0.25, imgsz: int = 640) -> Dict[str, Any]:
     """
@@ -46,74 +70,52 @@ def processing_image(file_path: str, out_dir: Optional[str] = None, conf: float 
     annotated_image = data["internal"].get("annotated_image")
     data["internal"]["annotated_image"] = annotated_image
 
+    # 将 annotated_image 转为前端可访问 URL（如果存在）
+    annotated_url = _fs_path_to_static_url(annotated_image)
+    if annotated_url:
+        data["internal"]["annotated_url"] = annotated_url
+
     # 仅当 detector 确认生成了 result json 时才调用裁剪
     if result_json_path and Path(result_json_path).exists():
         try:
-            from services import crop  # backend/services/crop.py
-            crops_out_dir = crops_root_dir
-            crops_out_dir.mkdir(parents=True, exist_ok=True)
             saved = crop_img(str(result_json_path),
-                                               images_dir=str(uploads_dir),
-                                               out_dir=str(crops_out_dir),
-                                               padding=0.08,
-                                               min_area=64)
+                                            images_dir=str(uploads_dir),
+                                            out_dir=str(crops_root_dir),
+                                            padding=0.08,
+                                            min_area=64)
             data["internal"]["crops"] = saved
 
-            # 调用 OCR 对每个裁剪结果进行识别（使用 backend/services/ocr.py 中的 recognize_plate_from_path）
+            # --- 新增：调用 number_detector 处理 crops 并返回结果 URL ---
             try:
-                from services import ocr as ocr_service  # backend/services/ocr.py
+                from services import number_detector as number_detector_service
             except Exception:
-                ocr_service = None
+                number_detector_service = None
 
-            if ocr_service is not None:
-                ocr_results = []
-                for crop_path in saved:
-                    try:
-                        plate_text, conf = ocr_service.recognize_plate_from_path(str(crop_path), engine='easyocr')
-                        ocr_results.append({"path": str(crop_path), "text": plate_text, "conf": conf})
-                        # 在控制台打印保存的结果
-                        print(f"OCR: {crop_path} -> {plate_text} (conf={conf})")
-                    except Exception as e:
-                        ocr_results.append({"path": str(crop_path), "error": str(e)})
-                        print(f"OCR error for {crop_path}: {e}")
-                data["internal"]["ocr_results"] = ocr_results
-            else:
-                data["internal"]["ocr_error"] = "easyocr not available or import failed"
-
-            # 调用 number_detector 对裁剪结果进行识别，并把结果保存到 static/results/number
-            try:
+            if number_detector_service is not None:
+                number_results_dir = results_root / "number"
+                number_results_dir.mkdir(parents=True, exist_ok=True)
+                # 对 crops 目录运行识别（number_detector 默认会读取 static/results/crops）
                 try:
-                    from services import number_detector as number_detector_service  # backend/services/number_detector.py
-                except Exception:
-                    number_detector_service = None
-
-                if number_detector_service is not None:
-                    number_results_dir = results_root / "number"
-                    number_results_dir.mkdir(parents=True, exist_ok=True)
-                    # number_detector 会处理 crops 目录中的图像，传入 results_dir 让其将输出写到指定目录
                     number_detector_service.detect_all(conf=conf, imgsz=imgsz, results_dir=number_results_dir, input_path=None)
-
-                    # 列出 number 目录下保存的图片和 json 并记录到返回数据，同时在控制台打印
-                    saved_imgs = sorted([str(p) for p in number_results_dir.iterdir() if p.is_file() and "_pred" in p.name])
-                    saved_jsons = sorted([str(p) for p in number_results_dir.iterdir() if p.is_file() and p.suffix.lower() == ".json"])
-                    data["internal"]["number_results"] = {"images": saved_imgs, "jsons": saved_jsons}
-
-                    print("Number detector results saved to:", str(number_results_dir))
-                    for p in saved_imgs + saved_jsons:
-                        print("  ", p)
-                else:
-                    data["internal"]["number_error"] = "number_detector not available or import failed"
-                    print("number_detector import failed or not available")
-            except Exception as e:
-                data["internal"]["number_error"] = str(e)
-                print("Number detector error:", e)
-
+                    # 汇总 results_dir 中保存的图片和 JSON，转换为前端可访问 URL
+                    imgs = sorted([p for p in number_results_dir.iterdir() if p.is_file() and p.suffix.lower() in {'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}])
+                    jsons = sorted([p for p in number_results_dir.iterdir() if p.is_file() and p.suffix.lower() == '.json'])
+                    number_images = [ _fs_path_to_static_url(str(p)) or str(p) for p in imgs ]
+                    number_jsons = [ _fs_path_to_static_url(str(p)) or str(p) for p in jsons ]
+                    data["internal"]["number_results"] = {"images": number_images, "jsons": number_jsons, "dir": str(number_results_dir)}
+                    print("Finally results saved to:", str(number_results_dir))
+                except Exception as e:
+                    data["internal"]["number_error"] = str(e)
+                    print("Number detector error:", e)
+            else:
+                data["internal"]["number_error"] = "number_detector not available or import failed"
+                print("number_detector import failed or not available")
         except Exception as e:
             data["internal"]["crops_error"] = str(e)
     else:
         data["internal"]["crops_error"] = f"detector result json not found: {result_json_path}"
 
-    # 如果请求导出标注图到外部 out_dir，则复制一份
+    # 如果请求导出标注图到外部 out_dir，则复制一份并返回可访问 URL
     if out_dir and annotated_image:
         annotated_image_path = Path(annotated_image)
         if annotated_image_path.exists():
@@ -122,7 +124,38 @@ def processing_image(file_path: str, out_dir: Optional[str] = None, conf: float 
             exported = out_dir_p / annotated_image_path.name
             shutil.copy2(annotated_image_path, exported)
             data["internal"]["exported_image"] = str(exported)
+            exported_url = _fs_path_to_static_url(str(exported))
+            if exported_url:
+                data["internal"]["exported_url"] = exported_url
 
+    # 也为 front-end 提供一个优先的 annotated_url 字段（如果没有 annotated_url，尝试从 internal.exported_image）
+    if not data["internal"].get("annotated_url"):
+        maybe_exported = data["internal"].get("exported_image") or data["internal"].get("annotated_image")
+        maybe_url = _fs_path_to_static_url(maybe_exported) if maybe_exported else None
+        if maybe_url:
+            data["internal"]["annotated_url"] = maybe_url
+
+    # --- 新增：在发送给前端前在后端控制台输出将要返回的关键字段，便于排查 ---
+    try:
+        annotated_url_out = data["internal"].get("annotated_url")
+        exported_url_out = data["internal"].get("exported_url") or data["internal"].get("exported_image")
+        number_results_out = data["internal"].get("number_results")
+
+        print("processing_image: finished processing, preparing response for frontend")
+        print("  source file:", str(file_path))
+        print("  annotated_image (fs):", data["internal"].get("annotated_image"))
+        print("  annotated_url (http):", annotated_url_out)
+        if exported_url_out:
+            print("  exported (fs or url):", exported_url_out)
+        if number_results_out:
+            print("  number_results.dir:", number_results_out.get("dir"))
+            print("  number_results.images:", number_results_out.get("images"))
+            print("  number_results.jsons:", number_results_out.get("jsons"))
+    except Exception as _e:
+        # 确保打印不影响返回
+        print("processing_image: log error:", _e)
+
+    # 返回给前端的最终结构（包含 detector_result.internal.annotated_url / number_results）
     return {"status": "ok", "source": str(file_path), "detector_result": data}
 
 
