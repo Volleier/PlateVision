@@ -1,0 +1,262 @@
+@use "./Button" as btn;
+
+/* 
+  UploadImage.scss
+  - English comments added
+  - Minor optimization: variables, placeholder for card base, reduced duplication, consistent transitions
+*/
+
+/* Color / layout variables for easy tuning */
+$bg-white: #fff;
+$muted-text: rgba(0, 0, 0, 0.6);
+$muted-text-weak: rgba(0, 0, 0, 0.35);
+$muted-text-strong: rgba(0, 0, 0, 0.85);
+$border-light: rgba(0, 0, 0, 0.06);
+$border-very-light: rgba(0, 0, 0, 0.03);
+$primary: #007bff;
+$primary-bg-light: rgba(0, 123, 255, 0.04);
+$primary-border: rgba(0, 123, 255, 0.5);
+$card-shadow: 0 8px 24px rgba(2, 10, 30, 0.04);
+$card-shadow-elevated: 0 14px 40px rgba(2, 10, 30, 0.08);
+$card-shadow-pressed: 0 6px 18px rgba(2, 10, 30, 0.06);
+$transition-fast: 0.12s ease;
+
+/* Reusable card-like base to reduce duplication */
+%card-base {
+  background: $bg-white;
+  border: 1px solid $border-light;
+  border-radius: 6px;
+  padding: 0;
+  min-height: 300px;
+  box-sizing: border-box;
+}
+
+/* Page title styles */
+.home-title {
+  font-size: 1.75rem;
+  color: #000;
+  margin: 0;
+  padding: 0.5rem 0;
+  text-align: left;
+}
+
+/* Main grid: upload and preview panels */
+.home-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding-top: 0;
+
+  /* Ensure consistent box-sizing for grid children */
+  &,
+  & *,
+  & *::before,
+  & *::after {
+    box-sizing: border-box;
+  }
+
+  /* Panel bases (upload/preview) share common card styles */
+  &__upload,
+  &__preview {
+    @extend %card-base;
+  }
+
+  /* Shared inner containers for upload and preview */
+  .upload-box,
+  .preview-box {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    color: $muted-text;
+    padding-top: 0;
+  }
+
+  /* Upload area styles (central interactive region) */
+  .upload-box {
+    cursor: default;
+    width: 100%;
+    padding: 0.75rem;
+    border-radius: 12px;
+    text-align: center;
+    transition: transform $transition-fast, box-shadow $transition-fast,
+      opacity $transition-fast;
+    background: linear-gradient(180deg, #ffffff 0%, #fafbfd 100%);
+    min-height: 160px;
+    justify-content: center;
+    outline: none;
+    margin: 0;
+
+    /* Drag-over visual state */
+    &.drag-over {
+      background: $primary-bg-light;
+      border: 1px dashed $primary-border;
+      transform: translateY(-2px);
+      box-shadow: $card-shadow-elevated;
+    }
+
+    /* Title inside upload box slightly stronger */
+    .home-title {
+      color: $muted-text-strong;
+      margin-bottom: 0.5rem;
+    }
+
+    /* Inner preview block inside upload area */
+    .upload-preview {
+      width: 100%;
+      margin-top: 0.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 160px;
+      border: 1px solid $border-very-light;
+      border-radius: 6px;
+      background: #fafafa;
+      padding: 0.5rem;
+      cursor: pointer;
+      transition: transform $transition-fast, box-shadow $transition-fast,
+        opacity $transition-fast;
+
+      /* Hover / active states for interactive feel */
+      &:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 12px 36px rgba(2, 10, 30, 0.08);
+        opacity: 0.99;
+      }
+
+      &:active {
+        transform: translateY(0);
+        box-shadow: $card-shadow-pressed;
+        opacity: 0.97;
+      }
+
+      .placeholder {
+        color: $muted-text-weak;
+      }
+
+      .preview-image {
+        max-width: 100%;
+        max-height: 80%;
+        object-fit: contain;
+        border-radius: 6px;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+      }
+    }
+  }
+
+  /* Small utility: upload button container */
+  .upload-btn {
+    display: inline-block;
+    margin-top: 0.5rem;
+  }
+
+  /* Primary send button: reuse Button module mixins and add small polish */
+  .upload-btn.upload-btn--send {
+    @include btn.btn-common;
+    @include btn.btn-variant(primary);
+    margin-top: 0.75rem;
+    border-radius: 10px;
+    transition: transform $transition-fast, box-shadow $transition-fast,
+      opacity $transition-fast;
+
+    &:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 12px 36px rgba(2, 10, 30, 0.08);
+      opacity: 0.98;
+    }
+    &:active {
+      transform: translateY(0);
+      box-shadow: $card-shadow-pressed;
+      opacity: 0.96;
+    }
+  }
+
+  /* Instruction and error text */
+  .upload-instruction {
+    font-size: 0.95rem;
+    color: rgba(0, 0, 0, 0.5);
+    margin: 0.25rem 0 0.5rem 0;
+  }
+
+  .error {
+    color: #b00020;
+    margin-top: 0.5rem;
+    font-size: 0.95rem;
+  }
+
+  /* Mobile layout: single column */
+  @media (max-width: 800px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Reset margins for title and actions to keep layout consistent */
+.home-title,
+.upload-actions {
+  margin: 0;
+  padding: 0;
+}
+
+/* 保持原有 .home-grid__preview 布局 不再用内联样式 */
+/* 专门为 processed-box 提供顶对齐的样式（标题和图片都置顶） */
+.processed-box {
+  /* 外层框风格保持 upload-box 的表现 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start; /* 顶部对齐，外框不移动 */
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 0.75rem;
+  box-sizing: border-box;
+
+  /* 标题置顶且居中显示 */
+  .home-title {
+    width: 100%;
+    text-align: center;
+    margin: 0 0 0.5rem 0;
+    padding-top: 0;
+  }
+
+  /* 预览区域置于标题下方，图片在预览区顶部对齐并水平居中 */
+  .processed-preview {
+    width: 100%;
+    display: flex;
+    align-items: flex-start; /* 图片顶部对齐 */
+    justify-content: center; /* 水平居中 */
+    min-height: 160px;
+    border: 1px solid rgba(0, 0, 0, 0.03);
+    border-radius: 6px;
+    background: #fafafa;
+    padding: 0.5rem;
+    box-sizing: border-box;
+  }
+
+  /* 确保图片在顶部并自适应 */
+  .processed-image {
+    margin-top: 0;
+    max-width: 100%;
+    max-height: 320px;
+    object-fit: contain;
+    border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  }
+
+  .placeholder {
+    width: 100%;
+    text-align: center;
+    color: rgba(0, 0, 0, 0.35);
+  }
+}
+
+/* 让右侧预览容器居中对齐，但不改变内部 .upload-box.processed-box 的布局或位置 */
+.home-grid__preview {
+  display: flex;
+  align-items: flex-start; /* 顶部对齐 processed-box 内部标题与图片 */
+  justify-content: center; /* 水平居中 processed-box（不移动 processed-box 内部结构） */
+  padding: 0.5rem; /* 可根据视觉调整 */
+  box-sizing: border-box;
+}
