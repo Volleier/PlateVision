@@ -10,19 +10,29 @@ import numpy as np
 import sys
 from typing import Optional
 
+# use centralized config paths
+from backend.config import cfg
+
 try:
     from ultralytics import YOLO
 except Exception as e:
     print("Please install ultralytics: pip install ultralytics. Error:", e)
     raise
 
-def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path] = None, input_path: Optional[Path] = None):
-    repo_root = Path(__file__).resolve().parents[2]  # e:\Project\PlateVision
-    static_dir = repo_root / "backend" / "static"
-    model_path = static_dir / "models" / "plate_best.pt"
-    uploads_dir = static_dir / "uploads"
-    # 如果外部传入 results_dir，则使用之；否则回退到默认 yolo_detect
-    results_dir = Path(results_dir) if results_dir else static_dir / "results" / "yolo_detect"
+def detect_all(conf: Optional[float] = None, imgsz: Optional[int] = None, results_dir: Optional[Path] = None, input_path: Optional[Path] = None):
+    """
+    Run detection on images in uploads (or a single input_path).
+    Uses paths from backend.config.cfg by default.
+    """
+    # use defaults from cfg when not provided
+    conf = cfg.DEFAULT_CONF if conf is None else conf
+    imgsz = cfg.DEFAULT_IMGSZ if imgsz is None else imgsz
+
+    # paths from config
+    model_path = cfg.PLATE_MODEL
+    uploads_dir = cfg.UPLOADS_DIR
+    # allow override of results_dir, otherwise use configured detector dir
+    results_dir = Path(results_dir) if results_dir else cfg.RESULTS_DETECTOR_DIR
 
     if not model_path.exists():
         print("Model file not found:", model_path)
@@ -31,7 +41,7 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
     uploads_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load local YOLOv11 model (ultralytics)
+    # Load local YOLO model (ultralytics)
     try:
         model = YOLO(str(model_path))
     except Exception as e:
@@ -40,11 +50,12 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
 
     exts = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
     if input_path:
+        p = Path(input_path)
         # 处理单张传入图片（无需复制到 uploads）
-        if not Path(input_path).exists() or Path(input_path).suffix.lower() not in exts:
+        if not p.exists() or p.suffix.lower() not in exts:
             print("Input image not found or unsupported:", input_path)
             return
-        imgs = [Path(input_path)]
+        imgs = [p]
     else:
         imgs = sorted([p for p in uploads_dir.iterdir() if p.suffix.lower() in exts and p.is_file()])
         if not imgs:

@@ -87,7 +87,7 @@ def processing_image(file_path: str, out_dir: Optional[str] = None, conf: float 
 
             # --- 新增：调用 number_detector 处理 crops 并返回结果 URL ---
             try:
-                from services import number_detector as number_detector_service
+                from backend.services import plate_reader as number_detector_service
             except Exception:
                 number_detector_service = None
 
@@ -170,7 +170,7 @@ def yolo_detector(uploaded_path: str, conf: float = 0.25, imgsz: int = 640, dete
         return {"status": "error", "message": f"uploaded file not found: {uploaded_path}"}
 
     # 延迟导入 detector
-    from services import detector  # backend/services/detector.py
+    from backend.services import plate_detector  # backend/services/detector.py
 
     repo_root = Path(__file__).resolve().parents[2]  # e:\Project\PlateVision
     static_dir = repo_root / "backend" / "static"
@@ -180,7 +180,7 @@ def yolo_detector(uploaded_path: str, conf: float = 0.25, imgsz: int = 640, dete
     # 计算要让 detector 写入的结果目录，并把它传给 detector
     results_dir = Path(detect_results_dir) if detect_results_dir else results_root / "yolo_detect"
     # 调用 detector，并传入结果目录（同步调用）
-    detector.detect_all(conf=conf, imgsz=imgsz, results_dir=results_dir, input_path=Path(uploaded_path))
+    plate_detector.detect_all(conf=conf, imgsz=imgsz, results_dir=results_dir, input_path=Path(uploaded_path))
 
     up = Path(uploaded_path)
     result_json_path = results_dir / f"{up.stem}.json"
@@ -218,7 +218,7 @@ def crop_img(result_json_path: str, images_dir: Optional[str] = None, out_dir: O
     封装裁剪调用：调用 backend.services.crop.crop_from_detector_result 并返回已保存裁剪图路径列表。
     延迟导入以避免循环依赖；若 result json 不存在会抛出 FileNotFoundError。
     """
-    from services import crop as _crop  # backend/services/crop.py (延迟导入)
+    from backend.services import plate_extractor as _crop  # backend/services/crop.py (延迟导入)
 
     json_p = Path(result_json_path)
     if not json_p.exists():
