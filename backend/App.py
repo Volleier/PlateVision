@@ -6,6 +6,14 @@ def create_app():
     app = Flask(__name__, static_folder="static", template_folder="templates")
     app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # Limit upload size to 16 MB
 
+    # Initialize logging
+    from logger import setup_logging
+    setup_logging(app)
+
+    # Initialize error handlers
+    from error_handlers import register_error_handlers
+    register_error_handlers(app)
+
     # Allow frontend cross-origin access to /api/* during development
     CORS(app, resources={r"/api/*": {"origins": "*"}})
 
