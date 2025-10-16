@@ -18,7 +18,7 @@ class Config:
         # 固定子目录（与当前 repo 结构保持一致）
         self.MODELS_SUB = "models"
         self.RESULTS_SUB = "results"
-        self.RESULTS_DETECTOR_SUB = "detector"   
+        self.RESULTS_DETECTOR_SUB = "detector"
         self.RESULTS_EXTRACTOR_SUB = "extractor"
         self.RESULTS_READER_SUB = "reader"
         self.UPLOADS_SUB = "uploads"
@@ -31,7 +31,7 @@ class Config:
         self.RESULTS_DETECTOR_DIR: Path = self.RESULTS_DIR / self.RESULTS_DETECTOR_SUB
         self.RESULTS_EXTRACTOR_DIR: Path = self.RESULTS_DIR / self.RESULTS_EXTRACTOR_SUB
         self.RESULTS_READER_DIR: Path = self.RESULTS_DIR / self.RESULTS_READER_SUB
-        self.UPLOADS_DIR: Path = self.BACKEND_DIR / self.UPLOADS_SUB  # matches backend/uploads
+        self.UPLOADS_DIR: Path = self.STATIC_DIR / self.UPLOADS_SUB
         self.SERVICES_DIR: Path = self.BACKEND_DIR / self.SERVICES_SUB
         self.UTILS_DIR: Path = self.BACKEND_DIR / self.UTILS_SUB
 
@@ -66,3 +66,11 @@ class Config:
 # 全局实例，项目中直接导入使用
 cfg = Config()
 cfg.ensure_dirs()
+
+# 兼容导出（保留旧接口，但指向 cfg，避免重复配置）
+UPLOADS_DIR = cfg.UPLOADS_DIR
+PLATE_MODEL = cfg.PLATE_MODEL
+STATIC_MODELS_DETECTOR_DIR = cfg.RESULTS_DETECTOR_DIR
+DEFAULT_CONF = cfg.DEFAULT_CONF
+DEFAULT_IMGSZ = cfg.DEFAULT_IMGSZ
+ALLOWED_EXTS = cfg.ALLOWED_EXTS

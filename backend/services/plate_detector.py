@@ -1,139 +1,143 @@
 import os
-# Temporary workaround: set before importing libraries that may trigger OpenMP (not recommended long-term)
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from pathlib import Path
+from typing import Optional, Dict, Any, List
 import json
-from PIL import Image
-import numpy as np
-import sys
-from typing import Optional
 
-# use centralized config paths
+import numpy as np
+from PIL import Image
+
 from backend.config import cfg
 
 try:
     from ultralytics import YOLO
 except Exception as e:
-    print("Please install ultralytics: pip install ultralytics. Error:", e)
-    raise
+    raise RuntimeError("ultralytics required: pip install ultralytics") from e
 
-def detect_all(conf: Optional[float] = None, imgsz: Optional[int] = None, results_dir: Optional[Path] = None, input_path: Optional[Path] = None):
-    """
-    Run detection on images in uploads (or a single input_path).
-    Uses paths from backend.config.cfg by default.
-    """
-    # use defaults from cfg when not provided
-    conf = cfg.DEFAULT_CONF if conf is None else conf
-    imgsz = cfg.DEFAULT_IMGSZ if imgsz is None else imgsz
+_MODEL = None
 
-    # paths from config
-    model_path = cfg.PLATE_MODEL
-    uploads_dir = cfg.UPLOADS_DIR
-    # allow override of results_dir, otherwise use configured detector dir
-    results_dir = Path(results_dir) if results_dir else cfg.RESULTS_DETECTOR_DIR
+def _get_model(model_path: Path):
+    global _MODEL
+    if _MODEL is None:
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        _MODEL = YOLO(str(model_path))
+    return _MODEL
 
-    if not model_path.exists():
-        print("Model file not found:", model_path)
-        return
+def _default_results_dir() -> Path:
+    return Path(cfg.RESULTS_DETECTOR_DIR)
 
-    uploads_dir.mkdir(parents=True, exist_ok=True)
+def _find_image_by_id(file_id: str, uploads_dir: Path, exts: Optional[set] = None) -> Optional[Path]:
+    exts = exts or set(cfg.ALLOWED_EXTS)
+    if not uploads_dir.exists():
+        return None
+    for p in uploads_dir.iterdir():
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in exts:
+            continue
+        if file_id in p.name:
+            return p
+    return None
+
+def _save_results(rendered_arr: np.ndarray, img_path: Path, results_dir: Path, detections: List[Dict[str, Any]]):
     results_dir.mkdir(parents=True, exist_ok=True)
+    arr = np.asarray(rendered_arr)
+    if arr.ndim == 2:
+        arr = np.stack([arr] * 3, axis=-1)
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        arr = np.concatenate([arr] * 3, axis=2)
+    if arr.dtype != np.uint8:
+        if np.issubdtype(arr.dtype, np.floating):
+            arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8) if arr.max() <= 1.0 else np.clip(arr, 0, 255).astype(np.uint8)
+        else:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
 
-    # Load local YOLO model (ultralytics)
+    out_img_path = results_dir / f"{img_path.stem}_pred{img_path.suffix}"
+    Image.fromarray(arr).save(out_img_path)
+
+    out_json_path = results_dir / f"{img_path.stem}.json"
+    with open(out_json_path, "w", encoding="utf-8") as f:
+        json.dump({"image": img_path.name, "detections": detections}, f, ensure_ascii=False, indent=2)
+
+    return out_img_path, out_json_path
+
+def _run_detection_on_path(img_path: Path, model, conf: float, imgsz: int, results_dir: Path) -> Dict[str, Any]:
     try:
-        model = YOLO(str(model_path))
-    except Exception as e:
-        print("Failed to load model:", e)
-        raise
+        results_dir.mkdir(parents=True, exist_ok=True)
+        # Prevent ultralytics from writing its default runs/ folder; we save results ourselves.
+        res_list = model.predict(source=str(img_path), conf=conf, imgsz=imgsz, verbose=False, save=False)
+        res = res_list[0] if isinstance(res_list, (list, tuple)) and len(res_list) > 0 else res_list
 
-    exts = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
-    if input_path:
-        p = Path(input_path)
-        # 处理单张传入图片（无需复制到 uploads）
-        if not p.exists() or p.suffix.lower() not in exts:
-            print("Input image not found or unsupported:", input_path)
-            return
-        imgs = [p]
-    else:
-        imgs = sorted([p for p in uploads_dir.iterdir() if p.suffix.lower() in exts and p.is_file()])
-        if not imgs:
-            print("No images found in:", uploads_dir)
-            return
-
-    for img_path in imgs:
+        rendered = None
         try:
-            print("Processing:", img_path.name)
-            # Use the predict interface (recommended by ultralytics)
-            res_list = model.predict(source=str(img_path), conf=conf, imgsz=imgsz, verbose=False)
-            # Handle returned single Results or a list
-            res = res_list[0] if isinstance(res_list, (list, tuple)) and len(res_list) > 0 else res_list
-
-            # Try to render annotated image
+            plot_fn = getattr(res, "plot", None)
+            if callable(plot_fn):
+                rendered = plot_fn()
+        except Exception:
             rendered = None
-            try:
-                plot_fn = getattr(res, "plot", None)
-                if callable(plot_fn):
-                    rendered = plot_fn()  # numpy array (RGB)
-            except Exception:
-                rendered = None
 
-            # If no rendered image, load original as fallback
-            if rendered is None:
-                rendered = np.array(Image.open(img_path).convert("RGB"))
+        if rendered is None:
+            rendered = np.array(Image.open(img_path).convert("RGB"))
 
-            # Extract boxes (safe)
-            detections = []
-            try:
-                boxes = getattr(res, "boxes", None)
-                # names may be on res or on model
-                names = getattr(res, "names", None) or getattr(model, "names", {}) or {}
-                if boxes is not None and hasattr(boxes, "xyxy"):
-                    xyxy = boxes.xyxy.cpu().numpy()
-                    confs = getattr(boxes, "conf", None)
-                    clss = getattr(boxes, "cls", None)
-                    confs_arr = confs.cpu().numpy() if confs is not None else [0.0] * len(xyxy)
-                    clss_arr = clss.cpu().numpy() if clss is not None else [0] * len(xyxy)
-                    for i, b in enumerate(xyxy):
-                        xmin, ymin, xmax, ymax = b.tolist()
-                        cls_id = int(clss_arr[i])
-                        detections.append({
-                            "xmin": float(xmin), "ymin": float(ymin),
-                            "xmax": float(xmax), "ymax": float(ymax),
-                            "confidence": float(confs_arr[i]),
-                            "class": cls_id,
-                            "name": str(names.get(cls_id, cls_id))
-                        })
-            except Exception:
-                # Ignore parsing errors and continue with current detections (may be empty)
-                pass
+        detections: List[Dict[str, Any]] = []
+        try:
+            boxes = getattr(res, "boxes", None)
+            names = getattr(res, "names", None) or getattr(model, "names", {}) or {}
+            if boxes is not None and hasattr(boxes, "xyxy"):
+                xyxy = boxes.xyxy.cpu().numpy()
+                confs = getattr(boxes, "conf", None)
+                clss = getattr(boxes, "cls", None)
+                confs_arr = confs.cpu().numpy() if confs is not None else [0.0] * len(xyxy)
+                clss_arr = clss.cpu().numpy() if clss is not None else [0] * len(xyxy)
+                for i, b in enumerate(xyxy):
+                    xmin, ymin, xmax, ymax = b.tolist()
+                    cls_id = int(clss_arr[i])
+                    detections.append({
+                        "xmin": float(xmin), "ymin": float(ymin),
+                        "xmax": float(xmax), "ymax": float(ymax),
+                        "confidence": float(confs_arr[i]),
+                        "class": cls_id,
+                        "name": str(names.get(cls_id, cls_id))
+                    })
+        except Exception:
+            pass
 
-            # Save annotated image (ensure uint8 RGB)
-            try:
-                arr = np.asarray(rendered)
-                if arr.ndim == 2:
-                    arr = np.stack([arr] * 3, axis=-1)
-                if arr.ndim == 3 and arr.shape[2] == 1:
-                    arr = np.concatenate([arr] * 3, axis=2)
-                if arr.dtype != np.uint8:
-                    if np.issubdtype(arr.dtype, np.floating):
-                        arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8) if arr.max() <= 1.0 else np.clip(arr, 0, 255).astype(np.uint8)
-                    else:
-                        arr = np.clip(arr, 0, 255).astype(np.uint8)
-            except Exception:
-                arr = np.array(Image.open(img_path).convert("RGB"))
+        if not isinstance(rendered, np.ndarray):
+            rendered = np.array(rendered)
+        out_img, out_json = _save_results(rendered, img_path, results_dir, detections)
 
-            out_img_path = results_dir / f"{img_path.stem}_pred{img_path.suffix}"
-            Image.fromarray(arr).save(out_img_path)
+        return {
+            "status": "ok",
+            "image": img_path.name,
+            "out_image": str(out_img),
+            "out_json": str(out_json),
+            "detections": detections
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e), "image": img_path.name if 'img_path' in locals() else None}
 
-            out_json_path = results_dir / f"{img_path.stem}.json"
-            with open(out_json_path, "w", encoding="utf-8") as f:
-                json.dump({"image": img_path.name, "detections": detections}, f, ensure_ascii=False, indent=2)
+def detect_image(file_id: str) -> Dict[str, Any]:
+    """
+    抽象入口：只需传入 file_id
+    """
+    conf = cfg.DEFAULT_CONF
+    imgsz = cfg.DEFAULT_IMGSZ
 
-            print("Saved:", out_img_path.name, out_json_path.name)
+    model_path = Path(cfg.PLATE_MODEL)
+    uploads_dir = Path(cfg.UPLOADS_DIR)
+    results_dir = _default_results_dir()
 
-        except Exception as e:
-            print(f"Error processing image {img_path.name}:", e)
+    img_path = _find_image_by_id(file_id, uploads_dir)
+    if img_path is None:
+        return {"status": "not_found", "error": f"no image with id {file_id} in {uploads_dir}"}
 
-    print("All done. Detector results saved in:", results_dir)
+    try:
+        model = _get_model(model_path)
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+    result = _run_detection_on_path(img_path, model, conf, imgsz, results_dir)
+    return result
