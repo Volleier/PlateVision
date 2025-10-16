@@ -1,5 +1,6 @@
 from flask import Flask
 from flask_cors import CORS
+from flask_executor import Executor
 import os
 
 def create_app():
@@ -20,6 +21,11 @@ def create_app():
     # Register upload blueprint
     from api.upload import bp as upload_bp
     app.register_blueprint(upload_bp)
+
+    # Initialize Executor
+    app.config.setdefault('EXECUTOR_TYPE', 'process')
+    executor = Executor(app)
+    setattr(app, "executor", executor)
 
     return app
 

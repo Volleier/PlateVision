@@ -4,8 +4,12 @@ import os
 import shutil
 import time
 import json
+import logging
 
 from backend.config import cfg
+
+# 使用与 app 相同的 logger 名称，确保日志写入同一位置
+_logger = logging.getLogger("App")
 
 def _fs_path_to_static_url(server_path: Optional[str]) -> Optional[str]:
     """
@@ -18,7 +22,7 @@ def _fs_path_to_static_url(server_path: Optional[str]) -> Optional[str]:
         p = p.resolve()
     except Exception:
         p = Path(server_path)
-    repo_root = Path(__file__).resolve().parents[2]  # e:\Project\PlateVision
+    repo_root = Path(__file__).resolve().parents[2]
     static_root = (repo_root / "backend" / "static").resolve()
     try:
         rel = p.relative_to(static_root)
@@ -31,37 +35,40 @@ def _fs_path_to_static_url(server_path: Optional[str]) -> Optional[str]:
 
 def plate_detector(file_id: str, conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
-    本地封装：调用 backend.services.plate_detector.detect_image(file_id)
-    - 确保常用目录存在
-    - 使用 cfg.RESULTS_DETECTOR_DIR 或传入的 results_dir
-    - 返回与服务模块相同的 detector_out（{"status":.., "image":.., "out_image":.., "out_json":.., "detections":[..]}）
+    直接在当前进程/线程同步调用后端 detector 服务。
+    设计原则：upload 已把 processing_image 提交到 executor，processing 在 worker 内执行时
+    不应再尝试使用 Flask app 的 executor（避免递归提交或跨进程访问 current_app）。
     """
     # 延迟导入服务模块（避免循环依赖）
     from backend.services import plate_detector as detector_service
 
-    # 准备路径
     repo_root = Path(__file__).resolve().parents[2]
     static_dir = repo_root / "backend" / "static"
     uploads_dir = Path(cfg.UPLOADS_DIR)
     results_root = static_dir / "results"
     detect_results_dir = Path(results_dir) if results_dir else Path(cfg.RESULTS_DETECTOR_DIR)
 
-    # 确保目录存在
     uploads_dir.mkdir(parents=True, exist_ok=True)
     results_root.mkdir(parents=True, exist_ok=True)
     detect_results_dir.mkdir(parents=True, exist_ok=True)
 
-    # 调用服务（当前服务接口只需 file_id）
-    detector_out = detector_service.detect_image(file_id)
-
-    # 如果需要，可以在这里扩展对 detector_out 的统一后处理（目前保持原样）
-    return detector_out
+    _logger.info("plate_detector: start file_id=%s conf=%s imgsz=%s", file_id, conf, imgsz)
+    try:
+        # 直接同步调用 detector 服务
+        # 所以这里只传入 file_id，其他参数由服务内部使用 cfg 配置
+        detector_out = detector_service.detect_image(file_id)
+        _logger.info("plate_detector: finished file_id=%s status=%s", file_id, detector_out.get("status") if isinstance(detector_out, dict) else None)
+        return detector_out
+    except Exception as e:
+        _logger.exception("plate_detector: exception for file_id=%s", file_id)
+        return {"status": "error", "error": str(e)}
 
 def processing_image(file_id: str, out_dir: Optional[str] = None, conf: float = 0.25, imgsz: int = 640) -> Dict[str, Any]:
     """
-    主入口：通过上传时的 file_id 调用本地 plate_detector 封装。
+    主入口：在 worker 中执行整个检测->裁剪->识别流程，使用本地 logger 记录关键步骤。
     """
-    # 准备常用路径
+    _logger.info("processing_image: start file_id=%s", file_id)
+    # 准备路径
     repo_root = Path(__file__).resolve().parents[2]
     static_dir = repo_root / "backend" / "static"
     uploads_dir = Path(cfg.UPLOADS_DIR)
@@ -75,76 +82,78 @@ def processing_image(file_id: str, out_dir: Optional[str] = None, conf: float = 
     detect_results_dir.mkdir(parents=True, exist_ok=True)
     crops_root_dir.mkdir(parents=True, exist_ok=True)
 
-    # 使用封装函数，仅传 file_id
-    detector_out = plate_detector(file_id, conf=conf, imgsz=imgsz, results_dir=detect_results_dir)
-    if detector_out.get("status") != "ok":
-        return {"status": "error", "message": detector_out.get("error", "detector failed"), "file_id": file_id}
+    try:
+        detector_out = plate_detector(file_id, conf=conf, imgsz=imgsz, results_dir=detect_results_dir)
+        if detector_out.get("status") != "ok":
+            _logger.warning("processing_image: detector failed for file_id=%s detail=%s", file_id, detector_out.get("error"))
+            return {"status": "error", "message": detector_out.get("error", "detector failed"), "file_id": file_id}
 
-    # detector 返回结构： {"status":"ok", "image": "<name>", "out_image": "<path>", "out_json": "<path>", "detections": [...]}
-    data: Dict[str, Any] = {}
-    data["detections"] = detector_out.get("detections", [])
-    data.setdefault("internal", {})
-    data["internal"]["uploaded_name"] = detector_out.get("image")
-    result_json_path = detector_out.get("out_json")
-    annotated_image = detector_out.get("out_image")
-    data["internal"]["result_json"] = str(result_json_path) if result_json_path else None
-    data["internal"]["annotated_image"] = str(annotated_image) if annotated_image else None
+        data: Dict[str, Any] = {}
+        data["detections"] = detector_out.get("detections", [])
+        data.setdefault("internal", {})
+        data["internal"]["uploaded_name"] = detector_out.get("image")
+        result_json_path = detector_out.get("out_json")
+        annotated_image = detector_out.get("out_image")
+        data["internal"]["result_json"] = str(result_json_path) if result_json_path else None
+        data["internal"]["annotated_image"] = str(annotated_image) if annotated_image else None
 
-    # 转为前端可访问 URL（如果存在）
-    annotated_url = _fs_path_to_static_url(data["internal"]["annotated_image"]) if data["internal"]["annotated_image"] else None
-    if annotated_url:
-        data["internal"]["annotated_url"] = annotated_url
+        annotated_url = _fs_path_to_static_url(data["internal"]["annotated_image"]) if data["internal"]["annotated_image"] else None
+        if annotated_url:
+            data["internal"]["annotated_url"] = annotated_url
 
-    # 当存在 detector json 时执行裁剪与后续步骤
-    if data["internal"]["result_json"] and Path(data["internal"]["result_json"]).exists():
-        try:
-            saved = crop_img(str(data["internal"]["result_json"]),
-                                            images_dir=str(uploads_dir),
-                                            out_dir=str(crops_root_dir),
-                                            padding=0.08,
-                                            min_area=64)
-            data["internal"]["crops"] = saved
-
-            # 调用 number_detector
+        if data["internal"]["result_json"] and Path(data["internal"]["result_json"]).exists():
             try:
-                from backend.services import plate_reader as number_detector_service
-            except Exception:
-                number_detector_service = None
+                saved = crop_img(str(data["internal"]["result_json"]),
+                                 images_dir=str(uploads_dir),
+                                 out_dir=str(crops_root_dir),
+                                 padding=0.08,
+                                 min_area=64)
+                data["internal"]["crops"] = saved
 
-            if number_detector_service is not None:
-                number_results_dir = results_root / "number"
-                number_results_dir.mkdir(parents=True, exist_ok=True)
                 try:
-                    number_detector_service.detect_all(conf=conf, imgsz=imgsz, results_dir=number_results_dir, input_path=None)
-                    imgs = sorted([p for p in number_results_dir.iterdir() if p.is_file() and p.suffix.lower() in {'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}])
-                    jsons = sorted([p for p in number_results_dir.iterdir() if p.is_file() and p.suffix.lower() == '.json'])
-                    number_images = [ _fs_path_to_static_url(str(p)) or str(p) for p in imgs ]
-                    number_jsons = [ _fs_path_to_static_url(str(p)) or str(p) for p in jsons ]
-                    data["internal"]["number_results"] = {"images": number_images, "jsons": number_jsons, "dir": str(number_results_dir)}
-                except Exception as e:
-                    data["internal"]["number_error"] = str(e)
-            else:
-                data["internal"]["number_error"] = "number_detector not available or import failed"
-        except Exception as e:
-            data["internal"]["crops_error"] = str(e)
-    else:
-        data["internal"]["crops_error"] = f"detector result json not found: {result_json_path}"
+                    from backend.services import plate_reader as number_detector_service
+                except Exception:
+                    number_detector_service = None
 
-    # 可选：把 annotated_image 复制到外部 out_dir 并返回 URL
-    if out_dir and data["internal"].get("annotated_image"):
-        annotated_image_path = Path(data["internal"]["annotated_image"])
-        if annotated_image_path.exists():
-            out_dir_p = Path(out_dir)
-            out_dir_p.mkdir(parents=True, exist_ok=True)
-            exported = out_dir_p / annotated_image_path.name
-            shutil.copy2(annotated_image_path, exported)
-            data["internal"]["exported_image"] = str(exported)
-            exported_url = _fs_path_to_static_url(str(exported))
-            if exported_url:
-                data["internal"]["exported_url"] = exported_url
+                if number_detector_service is not None:
+                    number_results_dir = results_root / "number"
+                    number_results_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        number_detector_service.detect_all(conf=conf, imgsz=imgsz, results_dir=number_results_dir, input_path=None)
+                        imgs = sorted([p for p in number_results_dir.iterdir() if p.is_file() and p.suffix.lower() in {'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}])
+                        jsons = sorted([p for p in number_results_dir.iterdir() if p.is_file() and p.suffix.lower() == '.json'])
+                        number_images = [_fs_path_to_static_url(str(p)) or str(p) for p in imgs]
+                        number_jsons = [_fs_path_to_static_url(str(p)) or str(p) for p in jsons]
+                        data["internal"]["number_results"] = {"images": number_images, "jsons": number_jsons, "dir": str(number_results_dir)}
+                    except Exception as e:
+                        _logger.exception("number detection failed for file_id=%s", file_id)
+                        data["internal"]["number_error"] = str(e)
+                else:
+                    data["internal"]["number_error"] = "number_detector not available or import failed"
+            except Exception as e:
+                _logger.exception("crop_img failed for file_id=%s", file_id)
+                data["internal"]["crops_error"] = str(e)
+        else:
+            data["internal"]["crops_error"] = f"detector result json not found: {result_json_path}"
 
-    # 返回结构
-    return {"status": "ok", "file_id": file_id, "detector_result": data}
+        # 可选导出 annotated image
+        if out_dir and data["internal"].get("annotated_image"):
+            annotated_image_path = Path(data["internal"]["annotated_image"])
+            if annotated_image_path.exists():
+                out_dir_p = Path(out_dir)
+                out_dir_p.mkdir(parents=True, exist_ok=True)
+                exported = out_dir_p / annotated_image_path.name
+                shutil.copy2(annotated_image_path, exported)
+                data["internal"]["exported_image"] = str(exported)
+                exported_url = _fs_path_to_static_url(str(exported))
+                if exported_url:
+                    data["internal"]["exported_url"] = exported_url
+
+        _logger.info("processing_image: finished file_id=%s", file_id)
+        return {"status": "ok", "file_id": file_id, "detector_result": data}
+    except Exception as e:
+        _logger.exception("processing_image: unexpected exception for file_id=%s", file_id)
+        return {"status": "error", "error": str(e), "file_id": file_id}
 
 
 def crop_img(result_json_path: str, images_dir: Optional[str] = None, out_dir: Optional[str] = None,
