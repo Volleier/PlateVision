@@ -7,7 +7,6 @@ import json
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from typing import Optional, List, Dict, Any
-import traceback
 import logging
 
 from backend.config import cfg
@@ -21,13 +20,18 @@ except Exception as e:
     raise
 
 def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path] = None, input_path: Optional[Path] = None):
+    """
+    执行 number 模型检测并在 results_dir 下保存 <stem>_pred.* 与 <stem>.json。
+    默认 results_dir 使用 cfg.RESULTS_READER_DIR（reader 输出目录）。
+    """
     try:
         repo_root = Path(__file__).resolve().parents[2]
         static_dir = repo_root / "backend" / "static"
         model_path = Path(cfg.NUMBER_MODEL) if getattr(cfg, "NUMBER_MODEL", None) else static_dir / "models" / "number_best.pt"
         crops_dir = Path(cfg.RESULTS_EXTRACTOR_DIR)
 
-        results_dir = Path(results_dir) if results_dir else Path(cfg.RESULTS_NUMBER_DIR)
+        # 改为 reader 结果目录默认
+        results_dir = Path(results_dir) if results_dir else Path(cfg.RESULTS_READER_DIR)
 
         if not model_path.exists():
             _logger.error("Number model not found: %s", model_path)
@@ -39,7 +43,7 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
 
         try:
             model = YOLO(str(model_path))
-        except Exception as e:
+        except Exception:
             _logger.exception("Failed to load number model: %s", model_path)
             return
 
@@ -90,12 +94,7 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
                 except Exception:
                     _logger.exception("Failed to parse number detection boxes for %s", img_path)
 
-                try:
-                    pil_img = Image.open(img_path).convert("RGB")
-                except Exception:
-                    pass
-
-                # 使用 PIL 在原图上只绘制经过 MIN_KEEP_CONF 过滤后的框
+                # 绘制检测结果并保存
                 try:
                     pil_img = Image.open(img_path).convert("RGB")
                     draw = ImageDraw.Draw(pil_img)
@@ -108,16 +107,13 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
                         xmin, ymin, xmax, ymax = det["xmin"], det["ymin"], det["xmax"], det["ymax"]
                         conf_val = det.get("confidence", 0.0)
                         name = det.get("name", "")
-                        # 绘制矩形和文本背景
                         draw.rectangle([xmin, ymin, xmax, ymax], outline="red", width=2)
                         text = f"{name} {conf_val:.2f}"
                         if font is not None:
                             try:
-                                # PIL >= 8.0.0
                                 bbox = draw.textbbox((0, 0), text, font=font)
                                 text_size = (bbox[2] - bbox[0], bbox[3] - bbox[1])
-                            except AttributeError:
-                                # Fallback for older PIL
+                            except Exception:
                                 bbox = font.getbbox(text)
                                 text_size = (bbox[2] - bbox[0], bbox[3] - bbox[1])
                         else:
@@ -130,7 +126,6 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
 
                     arr = np.asarray(pil_img)
                 except Exception:
-                    # 回退：尝试使用 res.plot() （可能包含低置信度框），若不可用则使用原图
                     try:
                         plot_fn = getattr(res, "plot", None)
                         rendered = plot_fn() if callable(plot_fn) else None
@@ -148,20 +143,16 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
                 with open(out_json_path, "w", encoding="utf-8") as f:
                     json.dump({"image": img_path.name, "detections": detections}, f, ensure_ascii=False, indent=2)
 
-                print("Saved:", out_img_path.name, out_json_path.name)
+                _logger.info("Saved number reader outputs: %s %s", out_img_path, out_json_path)
 
-            except Exception as e:
-                traceback.print_exc()
+            except Exception:
+                _logger.exception("Number detect failed for %s", img_path)
 
-        print("All done. Number detector results saved in:", results_dir)
-    except Exception as e:
-        traceback.print_exc()
+        _logger.info("Number detection done. Results saved in: %s", results_dir)
+    except Exception:
+        _logger.exception("detect_all unexpected error")
 
 def _default_results_dir() -> Path:
-    """
-    返回 reader 的默认结果目录，优先使用 cfg.RESULTS_READER_DIR，
-    否则 fallback 到 backend/static/results/reader
-    """
     try:
         base = Path(cfg.RESULTS_READER_DIR)
         return base
@@ -243,7 +234,7 @@ def read_image(file_id: str) -> Dict[str, Any]:
             return {"status": "not_found", "error": "no crops found in extractor results", "file_id": file_id}
 
         out_root = _default_results_dir()
-        out_dir = out_root / file_id
+        out_dir = out_root
         out_dir.mkdir(parents=True, exist_ok=True)
         _logger.info("plate_reader: processing %d crops for file_id=%s -> out_dir=%s", len(crops), file_id, out_dir)
 
@@ -264,7 +255,7 @@ def read_image(file_id: str) -> Dict[str, Any]:
         jsons = sorted([str(p) for p in out_dir.iterdir() if p.is_file() and p.suffix.lower() == ".json"])
 
         _logger.info("plate_reader: finished for file_id=%s images=%d jsons=%d", file_id, len(images), len(jsons))
-        return {"status": "ok", "file_id": file_id, "out_dir": str(out_dir), "images": images, "jsons": jsons}
+        return {"status": "ok", "file_id": file_id, "out_dir": str(out_root), "images": images, "jsons": jsons}
     except Exception as e:
         _logger.exception("plate_reader.read_image: unexpected exception for file_id=%s", file_id)
         return {"status": "error", "error": str(e), "file_id": file_id}

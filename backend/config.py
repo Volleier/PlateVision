@@ -1,69 +1,64 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import FrozenSet
 import os
 
 class Config:
-    """
-    统一的路径配置。
-    """
     def __init__(self):
-        repo_root = Path(__file__).resolve().parents[1]
+        repo_root = Path(__file__).resolve().parents[1]  # e:\Project\PlateVision
         backend_dir = repo_root / "backend"
         static_dir = backend_dir / "static"
         models_dir = static_dir / "models"
         results_dir = static_dir / "results"
-        uploads_dir = backend_dir / "uploads"
+        uploads_dir = static_dir / "uploads"
         logs_dir = repo_root / "logs"
 
-        self.PROJECT_ROOT = repo_root
-        self.BACKEND_DIR = backend_dir
-        self.STATIC_DIR = static_dir
-        self.MODELS_DIR = models_dir
-        self.RESULTS_DIR = results_dir
+        self.PROJECT_ROOT = str(repo_root)
+        self.BACKEND_DIR = str(backend_dir)
+        self.STATIC_DIR = str(static_dir)
+        self.MODELS_DIR = str(models_dir)
+        self.RESULTS_DIR = str(results_dir)
         self.UPLOADS_DIR = str(uploads_dir)
         self.LOGS_DIR = str(logs_dir)
 
-        # default subdirs under results
+        # 结果子目录
         self.RESULTS_DETECTOR_DIR = str(results_dir / "detector")
         self.RESULTS_EXTRACTOR_DIR = str(results_dir / "extractor")
         self.RESULTS_READER_DIR = str(results_dir / "reader")
-        self.RESULTS_NUMBER_DIR = str(results_dir / "number")
 
-        # model defaults
+        # 模型默认路径
         self.PLATE_MODEL = str(models_dir / "plate_best.pt")
         self.NUMBER_MODEL = str(models_dir / "number_best.pt")
 
-        # detection defaults
+        # 检测默认参数
         self.DEFAULT_CONF = 0.25
         self.DEFAULT_IMGSZ = 640
 
-        # allowed extensions
+        # 允许的扩展名
         self.ALLOWED_EXTS = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".gif"})
 
-    def ensure_dirs(self) -> None:
-        # create directories if not exist
-        for p in (
+    def ensure_dirs(self):
+        # 确保关键目录存在
+        paths = [
             Path(self.UPLOADS_DIR),
             Path(self.RESULTS_DETECTOR_DIR),
             Path(self.RESULTS_EXTRACTOR_DIR),
             Path(self.RESULTS_READER_DIR),
-            Path(self.RESULTS_NUMBER_DIR),
             Path(self.MODELS_DIR),
             Path(self.STATIC_DIR),
             Path(self.LOGS_DIR),
-        ):
+        ]
+        for p in paths:
             try:
                 p.mkdir(parents=True, exist_ok=True)
             except Exception:
-                # best-effort, ignore errors here
+                # 忽略创建失败（启动时会记录）
                 pass
 
 # 全局实例
 cfg = Config()
 cfg.ensure_dirs()
 
-# 兼容导出（保留旧接口，但指向 cfg）
+# 兼容导出（已移除 RESULTS_CROPS_DIR / RESULTS_NUMBER_DIR 导出）
 UPLOADS_DIR = cfg.UPLOADS_DIR
 PLATE_MODEL = cfg.PLATE_MODEL
 RESULTS_DETECTOR_DIR = cfg.RESULTS_DETECTOR_DIR

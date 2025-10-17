@@ -36,10 +36,7 @@ def _fs_path_to_static_url(server_path: Optional[str]) -> Optional[str]:
 def plate_detector(file_id: str, conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
     直接在当前进程/线程同步调用后端 detector 服务。
-    设计原则：upload 已把 processing_image 提交到 executor，processing 在 worker 内执行时
-    不应再尝试使用 Flask app 的 executor（避免递归提交或跨进程访问 current_app）。
     """
-    # 延迟导入服务模块（避免循环依赖）
     from backend.services import plate_detector as detector_service
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -54,8 +51,6 @@ def plate_detector(file_id: str, conf: float = 0.25, imgsz: int = 640, results_d
 
     _logger.info("plate_detector: start file_id=%s conf=%s imgsz=%s", file_id, conf, imgsz)
     try:
-        # 直接同步调用 detector 服务
-        # 所以这里只传入 file_id，其他参数由服务内部使用 cfg 配置
         detector_out = detector_service.detect_image(file_id)
         _logger.info("plate_detector: finished file_id=%s status=%s", file_id, detector_out.get("status") if isinstance(detector_out, dict) else None)
         return detector_out
@@ -75,14 +70,11 @@ def processing_image(file_id: str, out_dir: Optional[str] = None, conf: float = 
     results_root = static_dir / "results"
 
     detect_results_dir = Path(cfg.RESULTS_DETECTOR_DIR)
-    crops_root_dir = results_root / "crops"
-
     uploads_dir.mkdir(parents=True, exist_ok=True)
     results_root.mkdir(parents=True, exist_ok=True)
     detect_results_dir.mkdir(parents=True, exist_ok=True)
-    crops_root_dir.mkdir(parents=True, exist_ok=True)
 
-    #  ---------- 使用 detector 接口 ----------
+    # ---------- 使用 detector 接口 ----------
     try:
         detector_out = plate_detector(file_id, conf=conf, imgsz=imgsz, results_dir=detect_results_dir)
         if detector_out.get("status") != "ok":
@@ -104,53 +96,38 @@ def processing_image(file_id: str, out_dir: Optional[str] = None, conf: float = 
 
         # ---------- 使用 extractor 接口 ----------
         try:
-            # 延迟导入 extractor（避免循环依赖）
             from backend.services import plate_extractor as extractor
             ext_res = extractor.extract_image(file_id, padding=0.08, min_area=64)
             if isinstance(ext_res, dict) and ext_res.get("status") == "ok":
-                # extractor 返回的 crops 通常为文件路径列表
                 saved = ext_res.get("crops", [])
                 data["internal"]["crops"] = saved
                 data["internal"]["extractor_out_dir"] = ext_res.get("out_dir")
                 data["internal"]["detector_json"] = ext_res.get("detector_json")
             else:
-                # 记录 extractor 的错误或未找到情况
                 msg = ext_res.get("error") if isinstance(ext_res, dict) else str(ext_res)
                 _logger.warning("extractor failed or not found for file_id=%s detail=%s", file_id, msg)
                 data["internal"]["crops_error"] = msg or "extractor failed or not found"
                 saved = []
 
-            # 如果需要对每个 crop 做 number detection，逐张传入 detect_all 的 input_path
+            # ---------- 使用 reader 抽象层（一次性处理所有 crops） ----------
             try:
-                from backend.services import plate_reader as number_detector_service
+                from backend.services import plate_reader as reader_service
+                reader_res = reader_service.read_image(file_id)
+                if isinstance(reader_res, dict) and reader_res.get("status") == "ok":
+                    # 将路径转换为前端可访问的 static url（如可用）
+                    images = [ _fs_path_to_static_url(p) or p for p in reader_res.get("images", []) ]
+                    jsons = [ _fs_path_to_static_url(p) or p for p in reader_res.get("jsons", []) ]
+                    data["internal"]["reader_results"] = {"images": images, "jsons": jsons, "dir": reader_res.get("out_dir")}
+                else:
+                    msg = reader_res.get("error") if isinstance(reader_res, dict) else str(reader_res)
+                    _logger.warning("reader failed for file_id=%s detail=%s", file_id, msg)
+                    data["internal"]["reader_error"] = msg or "reader failed"
             except Exception:
-                number_detector_service = None
-
-            if number_detector_service is not None and saved:
-                number_results_dir = results_root / "number"
-                number_results_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    # 为避免重复加载模型多次，这里尽量调用 detect_all per-image with input_path
-                    for crop_path in saved:
-                        try:
-                            number_detector_service.detect_all(conf=conf, imgsz=imgsz, results_dir=number_results_dir, input_path=Path(crop_path))
-                        except Exception:
-                            _logger.exception("number detection failed for crop=%s file_id=%s", crop_path, file_id)
-                    imgs = sorted([p for p in number_results_dir.iterdir() if p.is_file() and p.suffix.lower() in {'.jpg','.jpeg','.png','.bmp','.tif','.tiff'}])
-                    jsons = sorted([p for p in number_results_dir.iterdir() if p.is_file() and p.suffix.lower() == '.json'])
-                    number_images = [_fs_path_to_static_url(str(p)) or str(p) for p in imgs]
-                    number_jsons = [_fs_path_to_static_url(str(p)) or str(p) for p in jsons]
-                    data["internal"]["number_results"] = {"images": number_images, "jsons": number_jsons, "dir": str(number_results_dir)}
-                except Exception as e:
-                    _logger.exception("number detection aggregation failed for file_id=%s", file_id)
-                    data["internal"]["number_error"] = str(e)
-            else:
-                if number_detector_service is None:
-                    data["internal"]["number_error"] = "number_detector not available or import failed"
-        except Exception as e:
+                _logger.exception("plate_reader.read_image import or execution failed for file_id=%s", file_id)
+                data["internal"]["reader_error"] = "plate_reader not available or failed"
+        except Exception:
             _logger.exception("extract_image failed for file_id=%s", file_id)
-            data["internal"]["crops_error"] = str(e)
-
+            data["internal"]["crops_error"] = "extractor failed"
         # 可选导出 annotated image
         if out_dir and data["internal"].get("annotated_image"):
             annotated_image_path = Path(data["internal"]["annotated_image"])
