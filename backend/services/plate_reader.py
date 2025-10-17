@@ -251,8 +251,19 @@ def read_image(file_id: str) -> Dict[str, Any]:
 
         # 汇总输出文件列表
         exts_img = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
-        images = sorted([str(p) for p in out_dir.iterdir() if p.is_file() and p.suffix.lower() in exts_img and p.stem.endswith("_pred")])
-        jsons = sorted([str(p) for p in out_dir.iterdir() if p.is_file() and p.suffix.lower() == ".json"])
+        images = sorted([
+            str(p) for p in out_dir.iterdir() 
+            if p.is_file() 
+            and p.suffix.lower() in exts_img 
+            and p.stem.endswith("_pred")
+            and file_id in p.name  
+        ])
+        jsons = sorted([
+            str(p) for p in out_dir.iterdir() 
+            if p.is_file() 
+            and p.suffix.lower() == ".json"
+            and file_id in p.name 
+        ])
 
         _logger.info("plate_reader: finished for file_id=%s images=%d jsons=%d", file_id, len(images), len(jsons))
         return {"status": "ok", "file_id": file_id, "out_dir": str(out_root), "images": images, "jsons": jsons}

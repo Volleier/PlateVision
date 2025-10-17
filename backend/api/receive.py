@@ -56,12 +56,23 @@ def _task_done_callback(fut, job_id: str):
         
         # 提取结果图片路径并存储到 _jobs
         if isinstance(res, dict) and res.get("status") == "ok":
+            file_id = res.get("file_id")  # 从结果中获取 file_id
             internal = res.get("detector_result", {}).get("internal", {})
             reader_results = internal.get("reader_results", {})
             
-            # 优先使用 reader 的图片
+            # 优先使用 reader 的图片（过滤出当前 file_id 的图片）
             reader_images = reader_results.get("images", [])
-            result_image = reader_images[0] if reader_images else None
+            result_image = None
+            
+            if reader_images and file_id:
+                # 查找包含当前 file_id 的图片
+                for img_path in reader_images:
+                    if file_id in str(img_path):
+                        result_image = img_path
+                        break
+                # 如果没找到匹配的，取最后一张（最新的）
+                if not result_image and reader_images:
+                    result_image = reader_images[-1]
             
             # 如果 reader 没有图片，使用 detector 的标注图
             if not result_image:
@@ -70,7 +81,8 @@ def _task_done_callback(fut, job_id: str):
             # 存储结果图片路径到 _jobs
             if job_id in _jobs and isinstance(_jobs[job_id], dict):
                 _jobs[job_id]["result_image"] = result_image
-                _logger.info("main: stored result_image for job_id=%s: %s", job_id, result_image)
+                _logger.info("main: stored result_image for job_id=%s file_id=%s: %s", 
+                           job_id, file_id, result_image)
     except Exception:
         _logger.exception("main: task done callback raised for job_id=%s", job_id)
 
