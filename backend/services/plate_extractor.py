@@ -1,8 +1,13 @@
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from PIL import Image
 import json
 import math
+import logging
+
+from backend.config import cfg
+
+_logger = logging.getLogger("App")
 
 def _clamp(v, a, b):
     return max(a, min(b, v))
@@ -74,27 +79,22 @@ def _extract_detections_from_json(data: Dict) -> List[Dict]:
         if key in data and isinstance(data[key], list):
             candidates = data[key]
             break
+    if candidates is None and isinstance(data, list):
+        candidates = data
     if candidates is None:
-        if isinstance(data, list):
-            candidates = data
-    if candidates is None:
-        # 试着寻找顶层包含 list 的字段
         for v in data.values() if isinstance(data, dict) else []:
             if isinstance(v, list):
                 candidates = v
                 break
     if not candidates:
         return []
-
     out = []
     for item in candidates:
         if not isinstance(item, dict):
             continue
-        # 支持多种 bbox 表示
         bbox = None
         conf = None
         cls = item.get("class") or item.get("cls") or item.get("category") or item.get("name")
-        # common keys
         if "bbox" in item:
             bbox = item["bbox"]
         elif "box" in item:
@@ -105,7 +105,6 @@ def _extract_detections_from_json(data: Dict) -> List[Dict]:
             bbox = [item["x"], item["y"], item["x"] + item["w"], item["y"] + item["h"]]
         elif all(k in item for k in ("cx","cy","w","h")):
             bbox = [item["cx"], item["cy"], item["w"], item["h"]]
-        # confidence
         for key in ("confidence","conf","score"):
             if key in item:
                 try:
@@ -167,8 +166,10 @@ def crop_from_paths(image_path: str, result_json_path: str, out_dir: Optional[st
         crop_img.save(out_path, quality=95)
         saved.append(str(out_path))
         
-        print("All done. Crop results saved in:", out_dir_p)
+        # 使用 logger 替代 print
+        _logger.debug("Saved crop %s for detection %d (conf=%s)", out_path, i, conf_s)
 
+    _logger.info("crop_from_paths: saved %d crops to %s for json=%s", len(saved), out_dir_p, json_p)
     return saved
 
 def crop_from_detector_result(result_json_path: str, images_dir: Optional[str] = None,
@@ -201,4 +202,82 @@ def crop_from_detector_result(result_json_path: str, images_dir: Optional[str] =
 
     # 取第一个可用
     src_img = img_candidates[0]
+    _logger.debug("crop_from_detector_result: source image for %s -> %s", json_p, src_img)
     return crop_from_paths(str(src_img), str(json_p), out_dir=out_dir, padding=padding, min_area=min_area)
+
+def _default_results_dir() -> Path:
+    """
+    返回 extractor 的默认结果目录，优先使用 cfg.RESULTS_EXTRACTOR_DIR，否则 fallback 到 backend/static/results/extractor
+    """
+    try:
+        base = Path(cfg.RESULTS_EXTRACTOR_DIR)
+        return base
+    except Exception:
+        repo_root = Path(__file__).resolve().parents[2]
+        return (repo_root / "backend" / "static" / "results" / "extractor")
+
+def _find_detector_json_by_file_id(file_id: str) -> Optional[Path]:
+    """
+    在 detector 结果目录中查找与 file_id 匹配的 json 文件（优先使用 cfg.RESULTS_DETECTOR_DIR）。
+    返回第一个找到的 Path 或 None。
+    """
+    detector_dir = Path(getattr(cfg, "RESULTS_DETECTOR_DIR", "")) or (Path(__file__).resolve().parents[2] / "backend" / "static" / "results" / "detector")
+    if not detector_dir.exists():
+        _logger.warning("Detector results directory does not exist: %s", detector_dir)
+        return None
+    for p in detector_dir.iterdir():
+        if p.is_file() and p.suffix.lower() == ".json" and file_id in p.stem:
+            _logger.info("Found detector json for file_id=%s -> %s", file_id, p)
+            return p
+    _logger.warning("No detector json found for file_id=%s in %s", file_id, detector_dir)
+    return None
+
+# ---------- 抽象层 API ----------
+def extract_image(file_id: str, padding: float = 0.08, min_area: int = 16) -> Dict[str, Any]:
+    """
+    抽象层入口：给定 file_id，查找 detector 的 json 并执行裁剪。
+    - 只接受 file_id（不会接收 out_dir），裁剪结果总是保存到默认 extractor 结果目录（由 cfg.RESULTS_EXTRACTOR_DIR 或 fallback 决定）
+    - 返回结构：
+      {"status":"ok","file_id":..,"out_dir":..,"crops":[..],"detector_json": "<path>"} 或错误信息
+    逻辑说明：
+    - 只依赖 detector 结果 json（不会触发 detector 运行）
+    - 不接受外部 out_dir 参数
+    """
+    _logger.info("plate_extractor.extract_image called for file_id=%s", file_id)
+    try:
+        json_p = _find_detector_json_by_file_id(file_id)
+        if json_p is None:
+            _logger.warning("extract_image: detector json not found for file_id=%s", file_id)
+            return {"status": "not_found", "error": "detector json not found", "file_id": file_id}
+
+        # 使用默认的 extractor 结果目录
+        target_dir = _default_results_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        _logger.info("extract_image: extracting crops for file_id=%s -> out_dir=%s", file_id, target_dir)
+
+        images_dir = getattr(cfg, "UPLOADS_DIR", None)
+        saved = crop_from_detector_result(str(json_p), images_dir=images_dir, out_dir=str(target_dir), padding=padding, min_area=min_area)
+
+        # 写入索引 json（包含 detector json 路径与 crops 列表）
+        index = {
+            "file_id": file_id,
+            "detector_json": str(json_p),
+            "out_dir": str(target_dir),
+            "crops": saved
+        }
+        index_path = target_dir / f"{file_id}_extract_index.json"
+        try:
+            with index_path.open("w", encoding="utf-8") as f:
+                json.dump(index, f, ensure_ascii=False, indent=2)
+            _logger.info("extract_image: wrote index %s", index_path)
+        except Exception:
+            _logger.exception("extract_image: failed to write index json for file_id=%s", file_id)
+
+        _logger.info("extract_image: finished for file_id=%s saved=%d", file_id, len(saved))
+        return {"status": "ok", "file_id": file_id, "out_dir": str(target_dir), "crops": saved, "detector_json": str(json_p)}
+    except FileNotFoundError as e:
+        _logger.exception("extract_image: file not found for file_id=%s", file_id)
+        return {"status": "error", "error": str(e), "file_id": file_id}
+    except Exception as e:
+        _logger.exception("extract_image: unexpected error for file_id=%s", file_id)
+        return {"status": "error", "error": str(e), "file_id": file_id}

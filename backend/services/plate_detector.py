@@ -5,6 +5,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 import json
+import logging
 
 import numpy as np
 from PIL import Image
@@ -16,14 +17,22 @@ try:
 except Exception as e:
     raise RuntimeError("ultralytics required: pip install ultralytics") from e
 
+# 本模块使用与 app 相同的 logger 名称，确保日志写入同一文件/handler
+_logger = logging.getLogger("App")
+
 _MODEL = None
 
 def _get_model(model_path: Path):
     global _MODEL
     if _MODEL is None:
+        _logger.info("Loading YOLO model from %s", model_path)
         if not model_path.exists():
+            _logger.error("Model file not found: %s", model_path)
             raise FileNotFoundError(f"Model file not found: {model_path}")
         _MODEL = YOLO(str(model_path))
+        _logger.info("Model loaded from %s", model_path)
+    else:
+        _logger.debug("Using cached model instance")
     return _MODEL
 
 def _default_results_dir() -> Path:
@@ -31,7 +40,9 @@ def _default_results_dir() -> Path:
 
 def _find_image_by_id(file_id: str, uploads_dir: Path, exts: Optional[set] = None) -> Optional[Path]:
     exts = exts or set(cfg.ALLOWED_EXTS)
+    _logger.debug("Searching for image by id=%s in %s", file_id, uploads_dir)
     if not uploads_dir.exists():
+        _logger.warning("Uploads directory does not exist: %s", uploads_dir)
         return None
     for p in uploads_dir.iterdir():
         if not p.is_file():
@@ -39,7 +50,9 @@ def _find_image_by_id(file_id: str, uploads_dir: Path, exts: Optional[set] = Non
         if p.suffix.lower() not in exts:
             continue
         if file_id in p.name:
+            _logger.info("Found image for id=%s -> %s", file_id, p)
             return p
+    _logger.warning("No image found for id=%s in %s", file_id, uploads_dir)
     return None
 
 def _save_results(rendered_arr: np.ndarray, img_path: Path, results_dir: Path, detections: List[Dict[str, Any]]):
@@ -57,16 +70,19 @@ def _save_results(rendered_arr: np.ndarray, img_path: Path, results_dir: Path, d
 
     out_img_path = results_dir / f"{img_path.stem}_pred{img_path.suffix}"
     Image.fromarray(arr).save(out_img_path)
+    _logger.info("Saved annotated image: %s", out_img_path)
 
     out_json_path = results_dir / f"{img_path.stem}.json"
     with open(out_json_path, "w", encoding="utf-8") as f:
         json.dump({"image": img_path.name, "detections": detections}, f, ensure_ascii=False, indent=2)
+    _logger.info("Saved detection json: %s (detections=%d)", out_json_path, len(detections))
 
     return out_img_path, out_json_path
 
 def _run_detection_on_path(img_path: Path, model, conf: float, imgsz: int, results_dir: Path) -> Dict[str, Any]:
     try:
         results_dir.mkdir(parents=True, exist_ok=True)
+        _logger.info("Running detection: image=%s conf=%s imgsz=%s results_dir=%s", img_path, conf, imgsz, results_dir)
         # Prevent ultralytics from writing its default runs/ folder; we save results ourselves.
         res_list = model.predict(source=str(img_path), conf=conf, imgsz=imgsz, verbose=False, save=False)
         res = res_list[0] if isinstance(res_list, (list, tuple)) and len(res_list) > 0 else res_list
@@ -102,8 +118,10 @@ def _run_detection_on_path(img_path: Path, model, conf: float, imgsz: int, resul
                         "class": cls_id,
                         "name": str(names.get(cls_id, cls_id))
                     })
-        except Exception:
-            pass
+        except Exception as ex:
+            _logger.exception("Failed to parse detection boxes for image=%s", img_path)
+
+        _logger.info("Detection complete for %s, found %d boxes", img_path, len(detections))
 
         if not isinstance(rendered, np.ndarray):
             rendered = np.array(rendered)
@@ -117,12 +135,15 @@ def _run_detection_on_path(img_path: Path, model, conf: float, imgsz: int, resul
             "detections": detections
         }
     except Exception as e:
+        _logger.exception("Detection failed for image=%s", img_path if 'img_path' in locals() else "<unknown>")
         return {"status": "error", "error": str(e), "image": img_path.name if 'img_path' in locals() else None}
 
+# ---------- 抽象层 API ----------
 def detect_image(file_id: str) -> Dict[str, Any]:
     """
     抽象入口：只需传入 file_id
     """
+    _logger.info("detect_image called for file_id=%s", file_id)
     conf = cfg.DEFAULT_CONF
     imgsz = cfg.DEFAULT_IMGSZ
 
@@ -132,12 +153,15 @@ def detect_image(file_id: str) -> Dict[str, Any]:
 
     img_path = _find_image_by_id(file_id, uploads_dir)
     if img_path is None:
+        _logger.warning("detect_image: image not found for file_id=%s", file_id)
         return {"status": "not_found", "error": f"no image with id {file_id} in {uploads_dir}"}
 
     try:
         model = _get_model(model_path)
     except Exception as e:
+        _logger.exception("Failed to load model for detect_image file_id=%s", file_id)
         return {"status": "error", "error": str(e)}
 
     result = _run_detection_on_path(img_path, model, conf, imgsz, results_dir)
+    _logger.info("detect_image finished for file_id=%s status=%s", file_id, result.get("status") if isinstance(result, dict) else None)
     return result
