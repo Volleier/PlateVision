@@ -99,65 +99,56 @@ export default defineComponent({
         const data = await resp.json();
         console.log("upload response:", data);
 
-        // 兼容包装在 detection 的情况
-        let payload: any = data;
-        if (data && typeof data === "object" && data.detection)
-          payload = data.detection;
-        const detectorResult = payload.detector_result || payload;
-        const internal =
-          (detectorResult && detectorResult.internal) || payload.internal || {};
+        const { job_id, file_id } = data;
 
-        // 打印 number_results（如果有）
-        const numberResults =
-          internal.number_results ||
-          detectorResult.number_results ||
-          payload.number_results;
-
-        // 优先使用 number_results 中的图片（来自 static/results/number）
-        if (
-          numberResults &&
-          Array.isArray(numberResults.images) &&
-          numberResults.images.length > 0
-        ) {
-          const nrImg = numberResults.images[0]; // 取第一张识别后的图
-          const candidate = tryNormalizeToBackendUrl(nrImg) || nrImg;
-          annotatedSrc.value =
-            candidate +
-            (candidate.includes("?") ? "&" : "?") +
-            `t=${Date.now()}`;
-          console.log("Using number_results image for display:", nrImg);
-        } else {
-          // 原有回退逻辑：寻找 annotated/expor ted 字段
-          let annotatedPath =
-            internal.annotated_url ||
-            internal.exported_url ||
-            internal.annotated_image ||
-            internal.exported_image ||
-            detectorResult.annotated_url ||
-            detectorResult.annotated_image ||
-            payload.annotated_url ||
-            payload.annotated_image ||
-            payload.url ||
-            "";
-
-          if (annotatedPath) {
-            // 优先把 /static/... 转为后端完整 URL，避免被 vite dev server 拦截
-            const candidate =
-              tryNormalizeToBackendUrl(annotatedPath) || annotatedPath;
-            annotatedSrc.value =
-              candidate +
-              (candidate.includes("?") ? "&" : "?") +
-              `t=${Date.now()}`;
-          } else {
-            errorMsg.value = "No annotated image returned from server";
-            console.warn("No annotated image in server response:", data);
-          }
+        if (!job_id) {
+          // 同步处理（无 executor），直接显示结果
+          handleResult(data.result);
+          return;
         }
 
-        if (numberResults) console.log("number_results:", numberResults);
+        // 异步处理，轮询任务状态
+        errorMsg.value = "处理中，请稍候...";
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusResp = await fetch(
+              `http://localhost:5000/api/tasks/${job_id}`
+            );
+            const statusData = await statusResp.json();
+
+            if (statusData.status === "done") {
+              clearInterval(pollInterval);
+              errorMsg.value = "";
+              // 获取结果图片
+              annotatedSrc.value = `http://localhost:5000/api/send/${file_id}?t=${Date.now()}`;
+            } else if (statusData.status === "error") {
+              clearInterval(pollInterval);
+              errorMsg.value = `处理失败: ${statusData.error}`;
+            }
+            // pending 状态继续轮询
+          } catch (err) {
+            clearInterval(pollInterval);
+            errorMsg.value = `轮询失败: ${err}`;
+          }
+        }, 1000); // 每秒轮询一次
       } catch (err: any) {
         errorMsg.value = String(err || "upload error");
         console.error("uploadFile error:", err);
+      }
+    }
+
+    // 处理同步返回的结果（兼容无 executor 的情况）
+    function handleResult(result: any) {
+      if (!result) return;
+      const internal =
+        result.detector_result?.internal || result.internal || {};
+      const annotatedPath =
+        internal.annotated_image || internal.exported_image || "";
+      if (annotatedPath) {
+        const candidate =
+          tryNormalizeToBackendUrl(annotatedPath) || annotatedPath;
+        annotatedSrc.value =
+          candidate + (candidate.includes("?") ? "&" : "?") + `t=${Date.now()}`;
       }
     }
 

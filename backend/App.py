@@ -2,6 +2,7 @@ from flask import Flask
 from flask_cors import CORS
 from flask_executor import Executor
 import os
+import logging
 
 def create_app():
     app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -16,20 +17,40 @@ def create_app():
     register_error_handlers(app)
 
     # Allow frontend cross-origin access to /api/* during development
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    try:
+        CORS(app, resources={r"/api/*": {"origins": "*"}})
+    except Exception:
+        logging.getLogger("App").warning("CORS not available, skipping")
 
-    # Register upload blueprint
-    from api.upload import bp as upload_bp
-    app.register_blueprint(upload_bp)
+    # Register blueprints - 使用 package 绝对导入
+    from backend.api.receive import bp as receive_bp
+    app.register_blueprint(receive_bp)
 
-    # Initialize Executor
-    app.config.setdefault('EXECUTOR_TYPE', 'process')
+    from backend.api.send import bp as send_bp
+    app.register_blueprint(send_bp)
+
+
+    # Initialize Executor (thread 模式)
+    app.config.setdefault('EXECUTOR_TYPE', 'thread')
     executor = Executor(app)
     setattr(app, "executor", executor)
+
+    # Debug: 打印所有注册的路由
+    logger = logging.getLogger("App")
+    logger.warning("=== Registered Routes ===")
+    for rule in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
+        # rule.methods may be None in some environments, guard against that
+        methods = set(rule.methods) if rule.methods is not None else set()
+        methods = methods - {'HEAD', 'OPTIONS'}
+        methods_str = ','.join(sorted(methods))
+        logger.warning("  %s -> %s [%s]", rule.rule, rule.endpoint, methods_str)
+    logger.warning("=========================")
 
     return app
 
 if __name__ == "__main__":
+    # 直接运行用于开发调试
     app = create_app()
     port = int(os.environ.get("PORT", 5000))
+    logging.getLogger("App").warning("Starting app on port %s", port)
     app.run(host="0.0.0.0", port=port, debug=True)

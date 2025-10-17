@@ -16,16 +16,16 @@ except Exception:
 from backend.config import cfg
 from backend.api.processing import processing_image
 
-bp = Blueprint("upload_api", __name__, url_prefix="/api")
+bp = Blueprint("receive_api", __name__, url_prefix="/api")  # 改为 receive_api
 
 # Default allowed file extensions for image uploads
 DEFAULT_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".gif"}
 ALLOWED_EXT = None
 
 # 简单内存 registry（注意：重启会丢失）
+# 结构：_jobs[job_id] = {"future": Future, "file_id": file_id}
 _jobs = {}
 
-# 使用与 app 同名的 logger 以便写入同一日志文件（setup_logging 中通常配置了 "App"）
 _logger = logging.getLogger("App")
 
 def _get_allowed_ext():
@@ -49,10 +49,29 @@ def _task_wrapper(file_id: str, job_id: str):
         raise
 
 def _task_done_callback(fut, job_id: str):
+    """任务完成回调：提取并存储结果图片路径"""
     try:
         res = fut.result()
         _logger.info("main: task done callback job_id=%s status=%s", job_id, res.get("status") if isinstance(res, dict) else None)
-    except Exception as e:
+        
+        # 提取结果图片路径并存储到 _jobs
+        if isinstance(res, dict) and res.get("status") == "ok":
+            internal = res.get("detector_result", {}).get("internal", {})
+            reader_results = internal.get("reader_results", {})
+            
+            # 优先使用 reader 的图片
+            reader_images = reader_results.get("images", [])
+            result_image = reader_images[0] if reader_images else None
+            
+            # 如果 reader 没有图片，使用 detector 的标注图
+            if not result_image:
+                result_image = internal.get("annotated_image") or internal.get("exported_image")
+            
+            # 存储结果图片路径到 _jobs
+            if job_id in _jobs and isinstance(_jobs[job_id], dict):
+                _jobs[job_id]["result_image"] = result_image
+                _logger.info("main: stored result_image for job_id=%s: %s", job_id, result_image)
+    except Exception:
         _logger.exception("main: task done callback raised for job_id=%s", job_id)
 
 @bp.route("/upload", methods=["POST"])
@@ -65,7 +84,13 @@ def upload():
         current_app.logger.exception("create upload dir failed")
         return jsonify({"error": "cannot create upload dir", "detail": str(e)}), 500
 
-    file = request.files.get("image") or request.files.get("upload") or (next(iter(request.files.values()), None))
+    # 优先读取 "file" 字段（前端发送的键名）
+    file = (
+        request.files.get("file")
+        or request.files.get("image")
+        or request.files.get("upload")
+        or (next(iter(request.files.values()), None))
+    )
     if not file or not getattr(file, "filename", ""):
         return jsonify({"error": "no file uploaded", "received_fields": list(request.files.keys())}), 400
 
@@ -87,7 +112,6 @@ def upload():
 
     tmp_path = None
     try:
-        # 先写入临时文件（优先写到 upload_dir，失败则回退系统临时目录）
         try:
             with tempfile.NamedTemporaryFile(delete=False, dir=str(upload_dir)) as tmp:
                 tmp_path = tmp.name
@@ -98,13 +122,11 @@ def upload():
                 tmp_path = tmp.name
                 file.save(tmp_path)
 
-        # 再次检查大小
         if max_len is not None and os.path.getsize(tmp_path) > max_len:
             os.remove(tmp_path)
             current_app.logger.warning("Upload too large after save, id=%s", file_id)
             return jsonify({"error": "file too large after upload", "max": max_len}), 413
 
-        # 验证图片合法性
         try:
             with Image.open(tmp_path) as img:
                 img.verify()
@@ -113,7 +135,6 @@ def upload():
             current_app.logger.warning("Uploaded file is not a valid image, id=%s, err=%s", file_id, e)
             return jsonify({"error": "invalid image file", "detail": str(e)}), 400
 
-        # 原子移动到最终位置
         os.replace(tmp_path, str(final_path))
         current_app.logger.info("Saved upload, id=%s, path=%s", file_id, final_path)
     except Exception as e:
@@ -124,29 +145,16 @@ def upload():
         except Exception:
             pass
         return jsonify({"error": "save failed", "detail": str(e)}), 500
+
     # ---------- 提交后台任务 ----------
     job_id = uuid4().hex
-    task_url = url_for("upload_api.task_status", job_id=job_id, _external=False)
-    try:
-        executor: Any = getattr(current_app, "executor", None)
-        if executor is not None:
-            future = executor.submit_stored(job_id, _task_wrapper, file_id, job_id)
-            # 在主进程注册 done callback（某些 backend 可能不支持 add_done_callback）
-            try:
-                future.add_done_callback(lambda fut, jid=job_id: _task_done_callback(fut, jid))
-            except Exception:
-                _logger.warning("add_done_callback failed for job_id=%s", job_id)
-            _jobs[job_id] = future
-            _logger.info("Submitted processing task, file_id=%s, job_id=%s", file_id, job_id)
-            return jsonify({
-                "file_id": file_id,
-                "filename": final_name,
-                "path": str(final_path),
-                "job_id": job_id,
-                "task_url": task_url
-            }), 202
-        else:
-            current_app.logger.warning("App.executor not found, running processing synchronously for id=%s", file_id)
+    task_url = url_for("receive_api.task_status", job_id=job_id, _external=False)
+    
+    executor: Any = getattr(current_app, "executor", None)
+    if executor is None:
+        # 无 executor，同步处理
+        current_app.logger.warning("App.executor not found, running processing synchronously for id=%s", file_id)
+        try:
             result = processing_image(file_id)
             return jsonify({
                 "file_id": file_id,
@@ -155,9 +163,37 @@ def upload():
                 "job_id": None,
                 "result": result
             }), 200
+        except Exception as e2:
+            current_app.logger.exception("sync processing failed for file_id=%s", file_id)
+            return jsonify({"error": "processing failed", "detail": str(e2)}), 500
+    
+    # 有 executor，异步提交
+    try:
+        # 优先使用 submit_stored，否则用 submit
+        if hasattr(executor, "submit_stored"):
+            future = executor.submit_stored(job_id, _task_wrapper, file_id, job_id)
+        else:
+            future = executor.submit(_task_wrapper, file_id, job_id)
+        
+        try:
+            future.add_done_callback(lambda fut, jid=job_id: _task_done_callback(fut, jid))
+        except Exception:
+            _logger.warning("add_done_callback failed for job_id=%s", job_id)
+        
+        # 关键修复：存储为字典结构，包含 future 和 file_id
+        _jobs[job_id] = {"future": future, "file_id": file_id}
+        _logger.info("Submitted processing task, file_id=%s, job_id=%s", file_id, job_id)
+        
+        return jsonify({
+            "file_id": file_id,
+            "filename": final_name,
+            "path": str(final_path),
+            "job_id": job_id,
+            "task_url": task_url
+        }), 202
     except Exception as e:
         current_app.logger.exception("submit task failed for file_id=%s", file_id)
-        # 回退同步执行以避免丢失任务
+        # 回退同步执行
         try:
             result = processing_image(file_id)
             return jsonify({
@@ -174,18 +210,32 @@ def upload():
 @bp.route('/tasks/<job_id>', methods=['GET'])
 def task_status(job_id):
     _logger.info("task status requested: job_id=%s remote=%s", job_id, request.remote_addr)
-    fut = _jobs.get(job_id)
-    if fut is None:
+    info = _jobs.get(job_id)
+    if info is None:
         _logger.warning("unknown job queried: job_id=%s", job_id)
         return jsonify({"error": "unknown job"}), 404
+    
+    # 兼容旧格式（直接存 Future）和新格式（字典）
+    if isinstance(info, dict):
+        fut = info.get("future")
+        file_id = info.get("file_id")
+    else:
+        fut = info
+        file_id = None
+    
+    # 检查 fut 是否为 None（防止类型错误）
+    if fut is None:
+        _logger.error("future is None for job_id=%s", job_id)
+        return jsonify({"error": "invalid job state", "file_id": file_id}), 500
+    
     if fut.done():
         try:
             result = fut.result()
         except Exception as e:
             _logger.exception("task finished with exception: job_id=%s err=%s", job_id, e)
-            return jsonify({"status": "error", "error": str(e)}), 200
+            return jsonify({"status": "error", "error": str(e), "file_id": file_id}), 200
         _logger.info("task status done: job_id=%s", job_id)
-        return jsonify({"status": "done", "result": result}), 200
+        return jsonify({"status": "done", "result": result, "file_id": file_id}), 200
     else:
         _logger.info("task status pending: job_id=%s", job_id)
-        return jsonify({"status": "pending"}), 200
+        return jsonify({"status": "pending", "file_id": file_id}), 200
