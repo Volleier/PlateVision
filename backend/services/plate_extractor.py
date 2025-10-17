@@ -176,14 +176,16 @@ def crop_from_detector_result(result_json_path: str, images_dir: Optional[str] =
                               out_dir: Optional[str] = None, padding: float = 0.1, min_area: int = 16) -> List[str]:
     """
     给定 detector 的 result.json，优先在 images_dir 查找原图（同名），找不到时用 results 中的 <stem>_pred.*。
+    返回裁剪后保存的文件路径列表（字符串）。
     """
     json_p = Path(result_json_path)
     if not json_p.exists():
         raise FileNotFoundError(f"result json not found: {json_p}")
 
     stem = json_p.stem
-    # 在 images_dir 查找原图
-    img_candidates = []
+    img_candidates: List[Path] = []
+
+    # 优先在上传目录或指定 images_dir 查找同名原图
     if images_dir:
         images_dir_p = Path(images_dir)
         if images_dir_p.exists():
@@ -191,20 +193,22 @@ def crop_from_detector_result(result_json_path: str, images_dir: Optional[str] =
                 p = images_dir_p / f"{stem}{ext}"
                 if p.exists():
                     img_candidates.append(p)
-    # 尝试 results 目录的标注图 <stem>_pred.*
+
+    # 再在 detector 的 results 目录查找带 _pred 后缀的标注图
     results_dir = json_p.parent
     for ext in (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"):
         p = results_dir / f"{stem}_pred{ext}"
         if p.exists():
             img_candidates.append(p)
+
     if not img_candidates:
         raise FileNotFoundError(f"cannot find source image for {json_p}; tried images_dir and results_dir")
 
-    # 取第一个可用
     src_img = img_candidates[0]
     _logger.debug("crop_from_detector_result: source image for %s -> %s", json_p, src_img)
     return crop_from_paths(str(src_img), str(json_p), out_dir=out_dir, padding=padding, min_area=min_area)
 
+# 抽象层入口
 def _default_results_dir() -> Path:
     """
     返回 extractor 的默认结果目录，优先使用 cfg.RESULTS_EXTRACTOR_DIR，否则 fallback 到 backend/static/results/extractor
@@ -217,11 +221,7 @@ def _default_results_dir() -> Path:
         return (repo_root / "backend" / "static" / "results" / "extractor")
 
 def _find_detector_json_by_file_id(file_id: str) -> Optional[Path]:
-    """
-    在 detector 结果目录中查找与 file_id 匹配的 json 文件（优先使用 cfg.RESULTS_DETECTOR_DIR）。
-    返回第一个找到的 Path 或 None。
-    """
-    detector_dir = Path(getattr(cfg, "RESULTS_DETECTOR_DIR", "")) or (Path(__file__).resolve().parents[2] / "backend" / "static" / "results" / "detector")
+    detector_dir = Path(cfg.RESULTS_DETECTOR_DIR)
     if not detector_dir.exists():
         _logger.warning("Detector results directory does not exist: %s", detector_dir)
         return None
@@ -232,7 +232,7 @@ def _find_detector_json_by_file_id(file_id: str) -> Optional[Path]:
     _logger.warning("No detector json found for file_id=%s in %s", file_id, detector_dir)
     return None
 
-# ---------- 抽象层 API ----------
+# ---------- Abstraction layer API ----------
 def extract_image(file_id: str, padding: float = 0.08, min_area: int = 16) -> Dict[str, Any]:
     """
     抽象层入口：给定 file_id，查找 detector 的 json 并执行裁剪。
@@ -255,7 +255,7 @@ def extract_image(file_id: str, padding: float = 0.08, min_area: int = 16) -> Di
         target_dir.mkdir(parents=True, exist_ok=True)
         _logger.info("extract_image: extracting crops for file_id=%s -> out_dir=%s", file_id, target_dir)
 
-        images_dir = getattr(cfg, "UPLOADS_DIR", None)
+        images_dir = cfg.UPLOADS_DIR
         saved = crop_from_detector_result(str(json_p), images_dir=images_dir, out_dir=str(target_dir), padding=padding, min_area=min_area)
 
         # 写入索引 json（包含 detector json 路径与 crops 列表）

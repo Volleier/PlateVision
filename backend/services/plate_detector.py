@@ -4,9 +4,8 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-import json
 import logging
-
+import json
 import numpy as np
 from PIL import Image
 
@@ -17,7 +16,6 @@ try:
 except Exception as e:
     raise RuntimeError("ultralytics required: pip install ultralytics") from e
 
-# 本模块使用与 app 相同的 logger 名称，确保日志写入同一文件/handler
 _logger = logging.getLogger("App")
 
 _MODEL = None
@@ -25,14 +23,14 @@ _MODEL = None
 def _get_model(model_path: Path):
     global _MODEL
     if _MODEL is None:
-        _logger.info("Loading YOLO model from %s", model_path)
+        _logger.info("Loading YOLO plate model from %s", model_path)
         if not model_path.exists():
             _logger.error("Model file not found: %s", model_path)
             raise FileNotFoundError(f"Model file not found: {model_path}")
         _MODEL = YOLO(str(model_path))
-        _logger.info("Model loaded from %s", model_path)
+        _logger.info("YOLO plate model loaded")
     else:
-        _logger.debug("Using cached model instance")
+        _logger.debug("Using cached plate model")
     return _MODEL
 
 def _default_results_dir() -> Path:
@@ -138,7 +136,7 @@ def _run_detection_on_path(img_path: Path, model, conf: float, imgsz: int, resul
         _logger.exception("Detection failed for image=%s", img_path if 'img_path' in locals() else "<unknown>")
         return {"status": "error", "error": str(e), "image": img_path.name if 'img_path' in locals() else None}
 
-# ---------- 抽象层 API ----------
+# ---------- Abstraction layer API ----------
 def detect_image(file_id: str) -> Dict[str, Any]:
     """
     抽象入口：只需传入 file_id
