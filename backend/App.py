@@ -3,6 +3,12 @@ from flask_cors import CORS
 from flask_executor import Executor
 import os
 import logging
+import sys
+import pathlib
+
+_project_root = pathlib.Path(__file__).resolve().parents[1]
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
 def create_app():
     app = Flask(__name__, static_folder="static", template_folder="templates")
