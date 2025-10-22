@@ -7,7 +7,7 @@ class SimpleModelService:
 
     def __init__(self, backend_url: Optional[str] = None, timeout: float = 10.0):
         # backend URL and timeout
-        self.backend_url = backend_url or "http://localhost:8000"
+        self.backend_url = backend_url or "http://localhost:5000"
         self.timeout = timeout
 
     def _health_ok(self) -> bool:

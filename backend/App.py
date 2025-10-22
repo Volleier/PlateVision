@@ -1,10 +1,9 @@
+import os
+import sys
+import pathlib
 from flask import Flask
 from flask_cors import CORS
 from flask_executor import Executor
-import os
-import logging
-import sys
-import pathlib
 
 _project_root = pathlib.Path(__file__).resolve().parents[1]
 if str(_project_root) not in sys.path:
@@ -26,7 +25,7 @@ def create_app():
     try:
         CORS(app, resources={r"/api/*": {"origins": "*"}})
     except Exception:
-        logging.getLogger("App").warning("CORS not available, skipping")
+        app.logger.warning("CORS not available, skipping")
 
     # Register blueprints - 使用 package 绝对导入
     from backend.api.receive import bp as receive_bp
@@ -35,14 +34,21 @@ def create_app():
     from backend.api.send import bp as send_bp
     app.register_blueprint(send_bp)
 
+    # Register health check blueprint
+    try:
+        from backend.api.health import bp as health_bp
+        app.register_blueprint(health_bp)
+    except Exception:
+        app.logger.warning("Health blueprint not available, skipping")
+
 
     # Initialize Executor (thread 模式)
     app.config.setdefault('EXECUTOR_TYPE', 'thread')
     executor = Executor(app)
     setattr(app, "executor", executor)
 
-    # Debug: 打印所有注册的路由
-    logger = logging.getLogger("App")
+    # Debug: print all register router
+    logger = app.logger
     logger.warning("=== Registered Routes ===")
     for rule in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
         # rule.methods may be None in some environments, guard against that
@@ -58,5 +64,5 @@ if __name__ == "__main__":
     # 直接运行用于开发调试
     app = create_app()
     port = int(os.environ.get("PORT", 5000))
-    logging.getLogger("App").warning("Starting app on port %s", port)
+    app.logger.warning("Starting app on port %s", port)
     app.run(host="0.0.0.0", port=port, debug=True)
