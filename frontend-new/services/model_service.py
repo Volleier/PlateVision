@@ -3,7 +3,7 @@ from typing import Optional
 import re
 
 class SimpleModelService:
-    """Frontend model service: calls backend FastAPI service, falls back to a default message on failure."""
+    """Frontend model service: 将图片以 multipart/form-data POST 到后端 FastAPI 服务。后端必须可用，否则抛出异常。"""
 
     def __init__(self, backend_url: Optional[str] = None, timeout: float = 10.0):
         # backend URL and timeout
@@ -11,7 +11,7 @@ class SimpleModelService:
         self.timeout = timeout
 
     def _health_ok(self) -> bool:
-        # simple health check: ensure model is loaded
+        """简易健康检查；若无法连接或返回非预期则返回 False。"""
         try:
             r = requests.get(f"{self.backend_url}/health", timeout=2.0)
             if r.status_code == 200:
@@ -21,65 +21,58 @@ class SimpleModelService:
             pass
         return False
 
-    def summarize(self, text: str, max_length: int = 150, min_length: int = 30,
-                  do_sample: bool = False, temperature: float = 0.7,
-                  num_beams: int = 4, length_penalty: float = 2.0) -> str:
-        """Call backend /summarize, fall back locally on failure."""
-        payload = {
-            "text": text,
-            "max_length": max_length,
-            "min_length": min_length,
-            "num_beams": num_beams,
-            "length_penalty": length_penalty
-        }
+    def process_image(self, uploaded_file, config: Optional[dict] = None) -> dict:
+        """
+        将上传的图片发送到后端 /process-image 并返回后端 JSON。
+        - uploaded_file: Streamlit UploadedFile（支持 .getvalue() 或 .read()，并具有 .name/.type）
+        - config: 可选字典，会以 form 字段 "config" 的 JSON 字符串形式发送
+        - 如果后端不可达或返回非 2xx，将抛出 RuntimeError / requests 异常
+        """
+        if uploaded_file is None:
+            raise ValueError("No image provided")
 
-        # 如果健康检查未通过，直接回退并标明原因
+        # 健康检查：如果后端未通过健康检查，直接抛出异常（不做本地回退）
         if not self._health_ok():
-            reason = "HEALTH_CHECK_FAILED"
-            print(f"[model_service] Health check failed, falling back to local summary. reason={reason}")
-            return self._local_fallback_summary(text, max_length, min_length, do_sample, temperature, num_beams, reason)
+            raise RuntimeError(f"Backend health check failed for {self.backend_url}")
 
+        # 读取 bytes
         try:
-            r = requests.post(f"{self.backend_url}/summarize", json=payload, timeout=self.timeout)
-            if r.status_code == 200:
-                j = r.json()
-                if isinstance(j, dict):
-                    if "summary" in j:
-                        return j["summary"]
-                    if "summaries" in j and isinstance(j["summaries"], list) and j["summaries"]:
-                        return j["summaries"][0]
-                    if "result" in j:
-                        return j["result"]
-                if isinstance(j, str):
-                    return j
-                # 响应解析失败
-                reason = "BACKEND_MALFORMED_RESPONSE"
-                print(f"[model_service] Backend returned malformed response, falling back. reason={reason}, raw={j}")
-            else:
-                reason = f"BACKEND_STATUS_{r.status_code}"
-                print(f"[model_service] Backend returned status code {r.status_code}, falling back to local summary. reason={reason}, body={r.text}")
+            img_bytes = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
         except Exception as e:
-            reason = f"BACKEND_EXCEPTION:{type(e).__name__}:{e}"
-            print(f"[model_service] Failed to call backend: {e}, falling back to local summary. reason={reason}")
+            raise RuntimeError(f"Failed to read uploaded file bytes: {e}")
 
-        return self._local_fallback_summary(text, max_length, min_length, do_sample, temperature, num_beams, reason)
+        # 构造 multipart/form-data
+        filename = getattr(uploaded_file, "name", "image")
+        content_type = getattr(uploaded_file, "type", "application/octet-stream") or "application/octet-stream"
+        files = {
+            "image": (filename, img_bytes, content_type)
+        }
+        data = {}
+        if config is not None:
+            import json
+            data["config"] = json.dumps(config)
 
-    def _local_fallback_summary(self, text, max_length, min_length, do_sample, temperature, num_beams, reason: Optional[str] = None):
-        # 任何回退都直接抛错，带上明确原因；如果没有原因则标记为 UNKNOWN_REASON。
-        if not reason:
-            reason = "UNKNOWN_REASON"
+        # 发送请求到后端 /process-image
+        try:
+            resp = requests.post(f"{self.backend_url}/process-image", files=files, data=data, timeout=self.timeout)
+        except Exception as e:
+            # 网络/连接错误：按要求抛出异常
+            raise RuntimeError(f"Failed to call backend {self.backend_url}/process-image: {e}")
 
-        tag = f"[LOCAL SUMMARY FALLBACK:{reason}]"
+        # 非成功响应也视为错误并抛出
+        try:
+            resp.raise_for_status()
+        except Exception:
+            # 尝试包含后端返回的文本以便调试
+            body = None
+            try:
+                body = resp.text
+            except Exception:
+                body = "<no-body>"
+            raise RuntimeError(f"Backend returned status {resp.status_code}: {body}")
 
-        # 空输入单独报 EMPTY_INPUT
-        if not text or not text.strip():
-            reason = "EMPTY_INPUT"
-            tag = f"[LOCAL SUMMARY FALLBACK:{reason}]"
-            msg = f"{tag} 输入文本为空，无法生成摘要。"
-            print(f"[model_service] {msg}")
-            raise RuntimeError(msg)
-
-        # 有明确失败原因或默认 UNKNOWN_REASON，一律抛错
-        msg = f"{tag} 无法生成摘要，原因：{reason}"
-        print(f"[model_service] {msg}")
-        raise RuntimeError(msg)
+        # 返回解析后的 JSON（如果非 JSON，会抛出 ValueError）
+        try:
+            return resp.json()
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse backend JSON response: {e}")

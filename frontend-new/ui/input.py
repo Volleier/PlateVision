@@ -6,10 +6,10 @@ def render_input_column():
     - Keep only the image upload method (supports drag & drop), show preview and basic info.
     - Will set st.session_state['generate_disabled']: True when no image, False when an image is present.
     """
-    st.subheader("Upload Image (supports drag & drop)")
+    st.subheader("Upload Image")
 
     uploaded_image = st.file_uploader(
-        "Drag and drop an image here or click to select (png/jpg/jpeg/bmp/gif)",
+        "Drag and drop an image here or click to select",
         type=['png', 'jpg', 'jpeg', 'bmp', 'gif'],
         accept_multiple_files=False,
         key="image_uploader"

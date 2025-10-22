@@ -5,13 +5,6 @@ def render_sidebar():
     with st.sidebar:
         st.header("Configuration")
 
-        # Model selection dropdown
-        model_option = st.selectbox(
-            "Select model:",
-            ["YOLOv11m"],
-            index=0
-        )
-
         # Max summary length slider
         max_length = st.slider(
             "Line 1:",
@@ -32,12 +25,19 @@ def render_sidebar():
 
         # Advanced options expander
         with st.expander("Advanced options"):
-            # Whether to enable sampling
-            do_sample = st.checkbox("Boolean", value=False)
-            # Sampling temperature
-            temperature = st.slider("Line 3", 0.1, 1.0, 0.7)
-            # Number of beams for beam search
-            num_beams = st.slider("Line 4", 1, 8, 4)
+            # Model selection dropdown
+            plate_model_option = st.selectbox(
+                "Select recognize plate model:",
+                ["YOLOv11m"],
+                index=0
+            )
+
+            # Model selection dropdown
+            number_model_option = st.selectbox(
+                "Select recognize number model:",
+                ["YOLOv11m"],
+                index=0
+            )
 
         st.markdown("---")
         # Usage instructions
@@ -51,10 +51,8 @@ def render_sidebar():
 
     # Return configuration dict for main app
     return {
-        "model_option": model_option,
         "max_length": max_length,
         "min_length": min_length,
-        "do_sample": do_sample,
-        "temperature": temperature,
-        "num_beams": num_beams
+        "plate_model_option":plate_model_option,
+        "number_model_option":number_model_option
     }

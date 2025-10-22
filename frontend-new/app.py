@@ -23,7 +23,7 @@ def main():
     service = SimpleModelService()
 
     # Create two-column layout: left for input, right for results
-    col1, col2 = st.columns([1, 1])
+    col1, col2 = st.columns([3, 5])
     with col1:
         # Render input column and get input text
         uploaded_image = ui_input.render_input_column()
@@ -36,7 +36,7 @@ def main():
     st.markdown(
         """
         <div style='text-align: center; color: gray;'>
-            <p>Transformer-based Intelligent Text Summarization System | Supports long-text processing | Real-time generation</p>
+            <p>License plate recognition system based on computer vision |  Real-time generation</p>
         </div>
         """,
         unsafe_allow_html=True
