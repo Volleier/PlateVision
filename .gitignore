@@ -29,9 +29,6 @@ dist/
 Thumbs.db
 
 ## Large/runtime data - prefer external storage or Git LFS
-backend/static/uploads/
-backend/static/results/
-backend/static/models/
 data/models/
 
 ## Data for training
