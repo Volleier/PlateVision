@@ -1,5 +1,5 @@
 from flask import jsonify
-from werkzeug.exceptions import HTTPException
+import traceback
 
 class ApiError(Exception):
     """
@@ -20,12 +20,13 @@ def register_error_handlers(app):
         body.update(e.payload)
         return jsonify(body), e.status_code
 
-    @app.errorhandler(HTTPException)
-    def handle_http_exception(e: HTTPException):
-        app.logger.warning("HTTPException: %s %s", getattr(e, "code", None), getattr(e, "description", ""))
-        return jsonify({"error": e.name, "code": e.code, "description": e.description}), e.code
-
     @app.errorhandler(Exception)
-    def handle_unhandled_exception(e: Exception):
-        app.logger.exception("Unhandled exception:")
-        return jsonify({"error": "Internal Server Error", "message": "An unexpected error occurred."}), 500
+    def handle_exception(e):
+        # 记录完整堆栈以便排查
+        app.logger.exception("Unhandled exception during request")
+        payload = {"error": "Internal Server Error", "message": "An unexpected error occurred."}
+        # 在开发模式下返回详细信息（仅用于调试）
+        if app.debug or app.config.get("ENV") == "development":
+            payload["detail"] = traceback.format_exc()
+            payload["type"] = type(e).__name__
+        return jsonify(payload), 500

@@ -2,7 +2,7 @@ import streamlit as st
 from core.config import render_sidebar
 from ui import input as ui_input
 from ui import result as ui_result
-from services.model_service import SimpleModelService
+from services.model_service import ModelService
 
 def main():
     """Streamlit application entry point."""
@@ -20,7 +20,7 @@ def main():
     # Render sidebar and get configuration
     config = render_sidebar()
     # Initialize model service (used for generating summaries, etc.)
-    service = SimpleModelService()
+    service = ModelService()
 
     # Create two-column layout: left for input, right for results
     col1, col2 = st.columns([3, 5])
