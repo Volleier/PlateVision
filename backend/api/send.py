@@ -1,7 +1,7 @@
-from flask import Blueprint, jsonify, send_file
+from flask import Blueprint, jsonify, send_file, make_response
 from pathlib import Path
-import logging
 import mimetypes
+import logging
 
 # 访问 receive 模块中的 _jobs 判断任务状态
 from backend.api import receive as receive_mod
@@ -42,75 +42,34 @@ def send_result_image(file_id: str):
     
     if not job_info:
         _logger.warning("send_api: no job found for file_id=%s", file_id)
-        return jsonify({
-            "status": "error",
-            "error": "no job found",
-            "file_id": file_id,
-            "message": "未找到对应的处理任务"
-        }), 404
-    
+        return jsonify({"status":"error","message":"no job found","file_id":file_id}), 404
+
     fut = job_info.get("future")
     if fut is None:
         _logger.error("send_api: job has no future for file_id=%s", file_id)
-        return jsonify({
-            "status": "error",
-            "error": "invalid job state",
-            "file_id": file_id
-        }), 500
-    
-    # 任务未完成，返回 pending
+        return jsonify({"status":"error","message":"internal_error"}), 500
+
+    # 任务未完成，返回 pending + steps 状态
     if not fut.done():
-        _logger.info("send_api: file_id=%s job_id=%s -> pending", file_id, job_id)
-        return jsonify({
-            "status": "pending",
-            "job_id": job_id,
-            "file_id": file_id,
-            "message": "图片处理中，请稍候..."
-        }), 202
-    
-    # 检查任务是否执行失败
+        steps = job_info.get("steps", {})
+        return make_response(jsonify({"status": "pending", "file_id": file_id, "steps": steps}), 202)
+
+    # 任务完成后，继续原有检查并返回图片
     try:
         result = fut.result()
         if isinstance(result, dict) and result.get("status") != "ok":
-            _logger.warning("send_api: job finished with error for file_id=%s: %s",
-                          file_id, result.get("message"))
-            return jsonify({
-                "status": "error",
-                "file_id": file_id,
-                "message": result.get("message", "处理失败")
-            }), 500
+            return jsonify({"status":"error","message":result.get("message","failed")}), 500
     except Exception as e:
         _logger.exception("send_api: job raised exception for file_id=%s", file_id)
-        return jsonify({
-            "status": "error",
-            "file_id": file_id,
-            "message": f"处理失败: {str(e)}"
-        }), 500
-    
-    # 获取存储的结果图片路径
+        return jsonify({"status":"error","message":"job exception"}), 500
+
     result_image = job_info.get("result_image")
-    
     if not result_image:
-        _logger.warning("send_api: no result_image stored for file_id=%s", file_id)
-        return jsonify({
-            "status": "error",
-            "error": "no result image",
-            "file_id": file_id,
-            "message": "未找到处理结果图片"
-        }), 404
-    
-    # 验证文件存在
+        return jsonify({"status":"error","message":"no result image"}), 404
+
     image_path = Path(result_image)
     if not image_path.exists() or not image_path.is_file():
-        _logger.error("send_api: result_image not found on disk: %s", result_image)
-        return jsonify({
-            "status": "error",
-            "error": "image file missing",
-            "file_id": file_id,
-            "message": "结果图片文件不存在"
-        }), 404
-    
-    # 返回图片
-    _logger.info("send_api: returning image %s for file_id=%s", image_path.name, file_id)
+        return jsonify({"status":"error","message":"result not found on disk"}), 404
+
     mime, _ = mimetypes.guess_type(str(image_path))
     return send_file(str(image_path), mimetype=mime, as_attachment=False)

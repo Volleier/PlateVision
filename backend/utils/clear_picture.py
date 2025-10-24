@@ -38,12 +38,10 @@ def main():
     ]
 
     if len(sys.argv) < 2:
-        # 无参数时删除默认目录下的目标文件
         for d in default_dirs:
             delete_path(d)
         return
 
-    # 有参数时按路径处理（文件或目录）
     for raw in sys.argv[1:]:
         p = Path(raw)
         try:

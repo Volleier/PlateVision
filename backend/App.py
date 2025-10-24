@@ -27,7 +27,7 @@ def create_app():
     except Exception:
         app.logger.warning("CORS not available, skipping")
 
-    # Register blueprints - 浣跨敤 package 缁濆�瑰�煎叆
+    # Register blueprints
     from backend.api.receive import bp as receive_bp
     app.register_blueprint(receive_bp)
 
@@ -42,7 +42,7 @@ def create_app():
         app.logger.warning("Health blueprint not available, skipping")
 
 
-    # Initialize Executor (thread 妯″紡)
+    # Initialize Executor 
     app.config.setdefault('EXECUTOR_TYPE', 'thread')
     executor = Executor(app)
     setattr(app, "executor", executor)
@@ -61,7 +61,7 @@ def create_app():
     return app
 
 if __name__ == "__main__":
-    # 鐩存帴杩愯�岀敤浜庡紑鍙戣皟璇�
+    # Start the application
     app = create_app()
     port = int(os.environ.get("PORT", 5000))
     app.logger.warning("Starting app on port %s", port)

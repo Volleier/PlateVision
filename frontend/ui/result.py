@@ -69,36 +69,46 @@ def render_result_column(uploaded_image, config, service):
     # Progress bar and status text
     progress = st.progress(0)
     status = st.empty()
+    detail = st.empty()  # kept in case you want to display extra info later
+
+    # Step order is used to compute progress percentage; per-step textual output is intentionally omitted.
+    step_order = ["detector", "extractor", "reader"]
 
     for attempt in range(1, max_attempts + 1):
-        # Update progress bar
-        percent = int(((attempt - 1) / max_attempts) * 100)
-        progress.progress(percent)
-
         try:
             resp = requests.get(url, timeout=8)
         except requests.RequestException as e:
-            # Network/connection issue, continue retrying
-            status.info(f"Waiting for result (connection issue): {e} ({attempt}/{max_attempts})")
+            status.info(f"Waiting for result (connecting): {e} ({attempt}/{max_attempts})")
             time.sleep(delay)
             continue
 
-        # Backend returns 202 indicating still processing
-        if resp.status_code == 202:
-            time.sleep(delay)
-            continue
-
-        # Backend directly returns image content (200 + image/*)
+        # If backend returns pending JSON, parse steps and update progress only
         content_type = resp.headers.get("content-type", "")
-        if resp.status_code == 200 and content_type.startswith("image"):
+        if resp.status_code == 202 or ("application/json" in content_type and resp.status_code == 200):
             try:
-                # When image is received, force progress to complete
-                progress.progress(100)
-                status.success("Processing complete. Displaying result.")
-                st.image(BytesIO(resp.content), caption="Processed result from server", width="stretch")
+                j = resp.json()
             except Exception:
-                status.warning("Received image from backend but cannot preview it.")
-                progress.progress(100)
+                status.info(f"Waiting for result... ({attempt}/{max_attempts})")
+                time.sleep(delay)
+                continue
+
+            if isinstance(j, dict) and j.get("status") in ("pending", "processing"):
+                steps = j.get("steps", {})
+                # Calculate the number of completed steps
+                completed = sum(1 for s in step_order if steps.get(s, {}).get("status") == "ok")
+                total = len(step_order)
+                percent = int((completed / total) * 100)
+                # Update progress bar (do not display per-step lines)
+                progress.progress(percent)
+                status.info(f"Backend still processing... ({attempt}/{max_attempts}) waited {int((attempt-1)*delay)}s")
+                time.sleep(delay)
+                continue
+
+        # Force the progress bar to fill up and display when receiving an image
+        if resp.status_code == 200 and content_type.startswith("image"):
+            progress.progress(100)
+            status.success("Processing complete, displaying results.")
+            st.image(BytesIO(resp.content), caption="Processed result from server", width="stretch")
             break
 
         # If JSON is returned (error or info), parse and display

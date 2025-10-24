@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Callable, Any, Dict, Optional
 from pathlib import Path
 import logging
 import shutil
@@ -8,7 +8,7 @@ from backend.config import cfg
 # 使用与 app 相同的 logger 名称，确保日志写入同一位置
 _logger = logging.getLogger("App")
 
-def processing_image(file_id: str, out_dir: Optional[str] = None) -> Dict[str, Any]:
+def processing_image(file_id: str, out_dir: Optional[str] = None, progress_callback: Optional[Callable[[str, str, Any], None]] = None) -> Dict[str, Any]:
     """
     主处理流程：按顺序执行 detector -> extractor -> reader。
     
@@ -24,6 +24,8 @@ def processing_image(file_id: str, out_dir: Optional[str] = None) -> Dict[str, A
 
     # ---------- Detector ----------
     det_out = detector_step(file_id)
+    if progress_callback:
+        progress_callback("detector", "ok" if det_out.get("status") == "ok" else "error", det_out)
     if det_out.get("status") != "ok":
         _logger.warning("processing_image: detector failed for file_id=%s detail=%s", 
                        file_id, det_out.get("error"))
@@ -40,6 +42,8 @@ def processing_image(file_id: str, out_dir: Optional[str] = None) -> Dict[str, A
 
     # ---------- Extractor ----------
     ext_out = extractor_step(file_id)
+    if progress_callback:
+        progress_callback("extractor", "ok" if ext_out.get("status") == "ok" else "error", ext_out)
     if ext_out.get("status") == "ok":
         data["internal"]["crops"] = ext_out.get("crops", [])
         data["internal"]["extractor_out_dir"] = ext_out.get("out_dir")
@@ -52,6 +56,8 @@ def processing_image(file_id: str, out_dir: Optional[str] = None) -> Dict[str, A
 
     # ---------- Reader ----------
     rd_out = reader_step(file_id)
+    if progress_callback:
+        progress_callback("reader", "ok" if rd_out.get("status") == "ok" else "error", rd_out)
     if rd_out.get("status") == "ok":
         data["internal"]["reader_results"] = {
             "images": rd_out.get("images", []),

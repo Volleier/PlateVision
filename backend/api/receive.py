@@ -7,6 +7,7 @@ from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
 import logging
 from typing import Any
+import time
 
 try:
     import ulid
@@ -40,8 +41,20 @@ def allowed_filename(filename: str) -> bool:
 
 def _task_wrapper(file_id: str, job_id: str):
     _logger.info("worker: start processing file_id=%s job_id=%s", file_id, job_id)
+    def cb(step: str, status: str, info: Any = None):
+        try:
+            entry = _jobs.get(job_id)
+            if entry is None:
+                return
+            steps = entry.setdefault("steps", {})
+            steps[step] = {"status": status, "info": (info if isinstance(info, dict) else None), "updated_at": time.time()}
+            entry["last_update"] = time.time()
+        except Exception:
+            _logger.exception("worker: progress callback failed for job_id=%s step=%s", job_id, step)
+
     try:
-        result = processing_image(file_id)
+        # 调用 processing_image 并传入回调
+        result = processing_image(file_id, progress_callback=cb)
         _logger.info("worker: finished processing file_id=%s job_id=%s status=%s", file_id, job_id, result.get("status") if isinstance(result, dict) else None)
         return result
     except Exception:
