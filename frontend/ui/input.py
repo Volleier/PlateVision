@@ -17,7 +17,7 @@ def render_input_column():
 
     if uploaded_image is not None:
         try:
-            st.image(uploaded_image, caption=f"Uploaded: {uploaded_image.name}", use_container_width=True)
+            st.image(uploaded_image, caption=f"Uploaded: {uploaded_image.name}", width="stretch")
             st.success(f"Image uploaded successfully: {uploaded_image.name}, size: {uploaded_image.size} bytes")
         except Exception:
             st.warning("Unable to preview the image, but it was uploaded successfully.")
