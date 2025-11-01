@@ -19,7 +19,9 @@ except Exception as e:
     _logger.error("Please install ultralytics: pip install ultralytics. Error: %s", e)
     raise
 
-def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path] = None, input_path: Optional[Path] = None):
+from pathlib import Path
+
+def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path] = None, input_path: Optional[Path] = None, model_path: Optional[Path] = None):
     """
     执行 number 模型检测并在 results_dir 下保存 <stem>_pred.* 与 <stem>.json。
     默认 results_dir 使用 cfg.RESULTS_READER_DIR（reader 输出目录）。
@@ -27,7 +29,9 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
     try:
         repo_root = Path(__file__).resolve().parents[2]
         static_dir = repo_root / "backend" / "static"
-        model_path = Path(cfg.NUMBER_MODEL) if getattr(cfg, "NUMBER_MODEL", None) else static_dir / "models" / "number_best.pt"
+        # 如果外部传入 model_path（优先），否则使用 cfg 或 static 默认
+        if model_path is None:
+            model_path = Path(cfg.NUMBER_MODEL) if getattr(cfg, "NUMBER_MODEL", None) else static_dir / "models" / "number_best.pt"
         crops_dir = Path(cfg.RESULTS_EXTRACTOR_DIR)
 
         # 改为 reader 结果目录默认
@@ -217,7 +221,7 @@ def _find_extractor_crops_by_file_id(file_id: str) -> List[Path]:
 
 
 # ---------- Abstraction layer API ----------
-def read_image(file_id: str) -> Dict[str, Any]:
+def read_image(file_id: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     抽象层入口：只用 file_id。
     - 从 extractor 结果中找到裁剪图并对每张裁剪图运行 number detector（detect_all）。
@@ -241,11 +245,28 @@ def read_image(file_id: str) -> Dict[str, Any]:
         conf = getattr(cfg, "DEFAULT_CONF", 0.25)
         imgsz = getattr(cfg, "DEFAULT_IMGSZ", 640)
 
-        # 对每个 crop 调用本模块的 detect_all，传入本地的 conf/imgsz
+        # 支持通过 config 指定 number 模型
+        model_spec = None
+        if isinstance(config, dict):
+            model_spec = config.get("model_path") or config.get("model")
+        repo_root = Path(__file__).resolve().parents[2]
+        static_models_dir = repo_root / "backend" / "static" / "models"
+        model_path = None
+        if model_spec:
+            cand = Path(model_spec)
+            if cand.exists():
+                model_path = cand
+            else:
+                cand2 = static_models_dir / model_spec
+                if cand2.exists():
+                    model_path = cand2
+                else:
+                    _logger.warning("Requested reader model spec '%s' not found, falling back to cfg.NUMBER_MODEL", model_spec)
+        # 对每个 crop 调用本模块的 detect_all，传入本地的 conf/imgsz 与可选 model_path
         for crop_path in crops:
             try:
-                _logger.debug("plate_reader: running detect_all for crop=%s with conf=%s imgsz=%s", crop_path, conf, imgsz)
-                detect_all(conf=conf, imgsz=imgsz, results_dir=out_dir, input_path=Path(crop_path))
+                _logger.debug("plate_reader: running detect_all for crop=%s with conf=%s imgsz=%s model=%s", crop_path, conf, imgsz, model_path)
+                detect_all(conf=conf, imgsz=imgsz, results_dir=out_dir, input_path=Path(crop_path), model_path=model_path)
             except Exception:
                 _logger.exception("plate_reader: detect_all failed for crop=%s", crop_path)
 

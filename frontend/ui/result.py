@@ -87,8 +87,60 @@ def render_result_column(uploaded_image, config, service):
         backend_base = "http://localhost:5000"
     backend_base = backend_base.rstrip("/")
 
-    url = f"{backend_base}/api/send/{file_id}"
+    send_url = f"{backend_base}/api/send/{file_id}"
 
+    # If backend returned a job_id (async), prefer polling task/status endpoint first
+    job_id = result.get("job_id") if isinstance(result, dict) else None
+    task_url = None
+    if job_id:
+        # backend may return a relative task_url
+        task_url = result.get("task_url") or f"/api/tasks/{job_id}"
+        if task_url.startswith("/"):
+            task_url = backend_base + task_url
+
+    url = send_url
+
+    # Polling parameters and UI placeholders (used by task polling and final polling)
+    max_attempts = 30
+    delay = 1.0
+
+    # Progress bar and status text (initialized early so task polling can use them)
+    progress = st.progress(0)
+    status = st.empty()
+    detail = st.empty()  # kept in case you want to display extra info later
+
+    # Step order is used to compute progress percentage; per-step textual output is intentionally omitted.
+    step_order = ["detector", "extractor", "reader"]
+
+    # If we have a task_url, poll it first until done, then call send_url to fetch the image
+    if task_url:
+        status_text = st.empty()
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp_task = requests.get(task_url, timeout=6)
+            except requests.RequestException as e:
+                status_text.info(f"Waiting for task status (connect): {e} ({attempt}/{max_attempts})")
+                time.sleep(delay)
+                continue
+
+            if resp_task.status_code in (200, 202) and resp_task.headers.get("content-type", "").startswith("application/json"):
+                try:
+                    j = resp_task.json()
+                except Exception:
+                    status_text.info(f"Waiting for task status... ({attempt}/{max_attempts})")
+                    time.sleep(delay)
+                    continue
+
+                # task endpoint signals done explicitly
+                if isinstance(j, dict) and j.get("status") == "done":
+                    # proceed to request final image from send_url
+                    break
+                if isinstance(j, dict) and j.get("status") in ("pending", "processing", "accepted"):
+                    status_text.info(f"Backend processing... ({attempt}/{max_attempts}) waited {int((attempt-1)*delay)}s")
+    # after task done (or if no job_id), request the image via send_url
+    # polling parameters and UI placeholders were initialized above
+
+    # after task done (or if no job_id), request the image via send_url
     max_attempts = 30
     delay = 1.0
 

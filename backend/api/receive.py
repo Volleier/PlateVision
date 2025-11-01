@@ -1,17 +1,19 @@
 from flask import Blueprint, request, jsonify, current_app, url_for
 from werkzeug.utils import secure_filename
 from pathlib import Path
-import os
-import tempfile
 from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
-import logging
 from typing import Any, Optional
-import time
+
+import os
 import json
+import tempfile
+import time
+import logging
 
 try:
-    import ulid
+    import ulid as _ulid  # optional
+    ulid = _ulid
 except Exception:
     ulid = None
 
@@ -24,8 +26,7 @@ bp = Blueprint("receive_api", __name__, url_prefix="/api")  # 改为 receive_api
 DEFAULT_ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".gif"}
 ALLOWED_EXT = None
 
-# 简单内存 registry（注意：重启会丢失）
-# 结构：_jobs[job_id] = {"future": Future, "file_id": file_id}
+# 简单内存 registry（注意：重启会丢失）# 结构：_jobs[job_id] = {"future": Future, "file_id": file_id}
 _jobs = {}
 
 _logger = logging.getLogger("App")
@@ -79,24 +80,32 @@ def _task_done_callback(fut, job_id: str):
             result_image = None
             
             if reader_images and file_id:
-                # 查找包含当前 file_id 的图片
+                # 先尝试匹配包含 file_id 的图片名
                 for img_path in reader_images:
-                    if file_id in str(img_path):
-                        result_image = img_path
-                        break
+                    try:
+                        if file_id in str(img_path):
+                            result_image = img_path
+                            break
+                    except Exception:
+                        continue
                 # 如果没找到匹配的，取最后一张（最新的）
-                if not result_image and reader_images:
+                if not result_image and len(reader_images) > 0:
                     result_image = reader_images[-1]
-            
-            # 如果 reader 没有图片，使用 detector 的标注图
+
+            # 如果 reader 没有图片，使用 detector 的标注图或导出图
             if not result_image:
-                result_image = internal.get("annotated_image") or internal.get("exported_image")
-            
-            # 存储结果图片路径到 _jobs
-            if job_id in _jobs and isinstance(_jobs[job_id], dict):
-                _jobs[job_id]["result_image"] = result_image
-                _logger.info("main: stored result_image for job_id=%s file_id=%s: %s", 
-                           job_id, file_id, result_image)
+                result_image = internal.get("annotated_image") or internal.get("exported_image") or None
+
+            # 存储结果图片路径到 _jobs（如果不存在则创建占位）
+            entry = _jobs.get(job_id)
+            if entry is None:
+                _jobs[job_id] = {"future": fut, "file_id": file_id, "config": None}
+                entry = _jobs[job_id]
+            if isinstance(entry, dict):
+                entry["result_image"] = result_image
+                entry["result"] = res
+                entry["finished_at"] = time.time()
+                _logger.info("main: stored result_image for job_id=%s file_id=%s: %s", job_id, file_id, result_image)
     except Exception:
         _logger.exception("main: task done callback raised for job_id=%s", job_id)
 
@@ -116,9 +125,8 @@ def upload():
     if raw_config:
         try:
             config = json.loads(raw_config)
-            # 记录原始 JSON 字符串与美化后的解析结果，确保完整可见（注意隐私/敏感信息）
             current_app.logger.info("Upload raw config: %s", raw_config)
-            current_app.logger.info("Upload parsed config: %s", json.dumps(config, ensure_ascii=False, indent=2))
+            current_app.logger.debug("Upload parsed config: %s", json.dumps(config, ensure_ascii=False))
         except Exception as e:
             current_app.logger.warning("Failed to parse config JSON from upload: %s err=%s", raw_config, e)
             config = None
@@ -145,17 +153,11 @@ def upload():
     if ulid is not None:
         try:
             if hasattr(ulid, "new"):
-                # ulid-py 等：ulid.new() -> ULID obj，str(...) 可获取文本表示
-                file_id = str(ulid.new())
+                file_id = ulid.new().str if hasattr(ulid.new(), "str") else str(ulid.new())
             elif hasattr(ulid, "ULID"):
-                # 某些实现提供 ULID 类构造
-                try:
-                    file_id = str(ulid.ULID())
-                except Exception:
-                    file_id = None
+                file_id = ulid.ULID().str
             elif hasattr(ulid, "generate"):
-                # 其他实现可能有 generate()
-                file_id = str(ulid.generate())
+                file_id = ulid.generate()
             else:
                 file_id = None
         except Exception:
@@ -172,18 +174,18 @@ def upload():
     try:
         try:
             with tempfile.NamedTemporaryFile(delete=False, dir=str(upload_dir)) as tmp:
+                file.save(tmp)
                 tmp_path = tmp.name
-                file.save(tmp_path)
         except Exception:
             current_app.logger.warning("temp file in upload_dir failed, falling back to system temp dir, id=%s", file_id)
             with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                file.save(tmp)
                 tmp_path = tmp.name
-                file.save(tmp_path)
 
         if max_len is not None and os.path.getsize(tmp_path) > max_len:
             os.remove(tmp_path)
             current_app.logger.warning("Upload too large after save, id=%s", file_id)
-            return jsonify({"error": "file too large after upload", "max": max_len}), 413
+            return jsonify({"error": "file too large"}), 413
 
         try:
             with Image.open(tmp_path) as img:
@@ -191,7 +193,7 @@ def upload():
         except (UnidentifiedImageError, Exception) as e:
             os.remove(tmp_path)
             current_app.logger.warning("Uploaded file is not a valid image, id=%s, err=%s", file_id, e)
-            return jsonify({"error": "invalid image file", "detail": str(e)}), 400
+            return jsonify({"error": "invalid image", "detail": str(e)}), 400
 
         os.replace(tmp_path, str(final_path))
         current_app.logger.info("Saved upload, id=%s, path=%s", file_id, final_path)
@@ -209,22 +211,22 @@ def upload():
     task_url = url_for("receive_api.task_status", job_id=job_id, _external=False)
     
     executor: Any = getattr(current_app, "executor", None)
+    # 先在 _jobs 中创建占位，避免 worker callback 在 future 还没写入时找不到 entry（race）
+    _jobs[job_id] = {"future": None, "file_id": file_id, "config": config, "created_at": time.time()}
+
     if executor is None:
         # 无 executor，同步处理
         current_app.logger.warning("App.executor not found, running processing synchronously for id=%s", file_id)
         try:
             # 将解析到的 config 传递给 processing_image
             result = processing_image(file_id, config=config)
-            return jsonify({
-                "file_id": file_id,
-                "filename": final_name,
-                "path": str(final_path),
-                "job_id": None,
-                "result": result
-            }), 200
+            # 同步执行完成，保存结果到 _jobs 并返回
+            _jobs[job_id]["result"] = result
+            _jobs[job_id]["finished_at"] = time.time()
+            return jsonify({"file_id": file_id, "job_id": job_id, "result": result}), 200
         except Exception as e2:
             current_app.logger.exception("sync processing failed for file_id=%s", file_id)
-            return jsonify({"error": "processing failed", "detail": str(e2)}), 500
+            return jsonify({"error": "sync processing failed", "detail": str(e2)}), 500
     
     # 有 executor，异步提交
     try:
@@ -240,7 +242,8 @@ def upload():
             _logger.warning("add_done_callback failed for job_id=%s", job_id)
         
         # 存储为字典结构，包含 future、file_id 与接收到的 config
-        _jobs[job_id] = {"future": future, "file_id": file_id, "config": config}
+        _jobs[job_id]["future"] = future
+        _jobs[job_id]["submitted_at"] = time.time()
         _logger.info("Submitted processing task, file_id=%s, job_id=%s config=%s", file_id, job_id, str(config))
         
         return jsonify({
@@ -255,16 +258,12 @@ def upload():
         # 回退同步执行
         try:
             result = processing_image(file_id, config=config)
-            return jsonify({
-                "file_id": file_id,
-                "filename": final_name,
-                "path": str(final_path),
-                "job_id": None,
-                "result": result
-            }), 200
+            _jobs[job_id]["result"] = result
+            _jobs[job_id]["finished_at"] = time.time()
+            return jsonify({"file_id": file_id, "job_id": job_id, "result": result}), 200
         except Exception as e2:
             current_app.logger.exception("sync processing also failed for file_id=%s", file_id)
-            return jsonify({"error": "task submit and sync processing failed", "detail": str(e2)}), 500
+            return jsonify({"error": "processing failed", "detail": str(e2)}), 500
 
 @bp.route('/tasks/<job_id>', methods=['GET'])
 def task_status(job_id):
@@ -284,17 +283,21 @@ def task_status(job_id):
     
     # 检查 fut 是否为 None（防止类型错误）
     if fut is None:
+        # 任务可能尚未提交或为同步已完成，返回当前字典中的状态/结果
+        entry = _jobs.get(job_id, {})
+        if "result" in entry:
+            return jsonify({"status": "done", "result": entry.get("result"), "file_id": file_id}), 200
         _logger.error("future is None for job_id=%s", job_id)
-        return jsonify({"error": "invalid job state", "file_id": file_id}), 500
+        return jsonify({"status": "pending", "file_id": file_id}), 202
     
     if fut.done():
         try:
             result = fut.result()
         except Exception as e:
             _logger.exception("task finished with exception: job_id=%s err=%s", job_id, e)
-            return jsonify({"status": "error", "error": str(e), "file_id": file_id}), 200
+            return jsonify({"error": "task failed", "detail": str(e)}), 500
         _logger.info("task status done: job_id=%s", job_id)
         return jsonify({"status": "done", "result": result, "file_id": file_id}), 200
     else:
         _logger.info("task status pending: job_id=%s", job_id)
-        return jsonify({"status": "pending", "file_id": file_id}), 200
+        return jsonify({"status": "pending", "file_id": file_id}), 202

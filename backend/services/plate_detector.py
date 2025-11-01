@@ -18,20 +18,23 @@ except Exception as e:
 
 _logger = logging.getLogger("App")
 
-_MODEL = None
+# 缓存按路径的模型实例，允许根据 config 加载不同模型
+_MODELS: Dict[str, Any] = {}
 
 def _get_model(model_path: Path):
-    global _MODEL
-    if _MODEL is None:
-        _logger.info("Loading YOLO plate model from %s", model_path)
-        if not model_path.exists():
-            _logger.error("Model file not found: %s", model_path)
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-        _MODEL = YOLO(str(model_path))
-        _logger.info("YOLO plate model loaded")
-    else:
-        _logger.debug("Using cached plate model")
-    return _MODEL
+    """按模型文件路径缓存并返回 YOLO 实例"""
+    key = str(model_path)
+    if key in _MODELS:
+        _logger.debug("Using cached plate model for %s", key)
+        return _MODELS[key]
+    _logger.info("Loading YOLO plate model from %s", model_path)
+    if not model_path.exists():
+        _logger.error("Model file not found: %s", model_path)
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+    mdl = YOLO(str(model_path))
+    _MODELS[key] = mdl
+    _logger.info("YOLO plate model loaded for %s", model_path)
+    return mdl
 
 def _default_results_dir() -> Path:
     return Path(cfg.RESULTS_DETECTOR_DIR)
@@ -137,15 +140,35 @@ def _run_detection_on_path(img_path: Path, model, conf: float, imgsz: int, resul
         return {"status": "error", "error": str(e), "image": img_path.name if 'img_path' in locals() else None}
 
 # ---------- Abstraction layer API ----------
-def detect_image(file_id: str) -> Dict[str, Any]:
+def detect_image(file_id: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     抽象入口：只需传入 file_id
     """
-    _logger.info("detect_image called for file_id=%s", file_id)
+    _logger.info("detect_image called for file_id=%s config=%s", file_id, str(config))
     conf = cfg.DEFAULT_CONF
     imgsz = cfg.DEFAULT_IMGSZ
 
-    model_path = Path(cfg.PLATE_MODEL)
+    # 支持通过 config 指定 model 或 model_path，优先使用绝对/存在路径或 static/models 下的名称
+    model_spec = None
+    if isinstance(config, dict):
+        model_spec = config.get("model_path") or config.get("model")
+
+    repo_root = Path(__file__).resolve().parents[2]
+    static_models_dir = repo_root / "backend" / "static" / "models"
+    if model_spec:
+        cand = Path(model_spec)
+        if cand.exists():
+            model_path = cand
+        else:
+            # 尝试 static/models 下的文件名
+            cand2 = static_models_dir / model_spec
+            if cand2.exists():
+                model_path = cand2
+            else:
+                _logger.warning("Requested model spec '%s' not found, falling back to cfg.PLATE_MODEL", model_spec)
+                model_path = Path(cfg.PLATE_MODEL)
+    else:
+        model_path = Path(cfg.PLATE_MODEL)
     uploads_dir = Path(cfg.UPLOADS_DIR)
     results_dir = _default_results_dir()
 
