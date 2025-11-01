@@ -1,52 +1,80 @@
-# python
 import os
+# 在任何可能导入 torch/ultralytics 之前设置，避免 OpenMP 初始化错误（临时）
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-# Temporarily allow duplicate OpenMP libraries (not recommended for long-term use), must be set before any imports
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import sys
+from pathlib import Path
+from PIL import Image
+from tqdm import tqdm
 
-# Optional: Limit the number of threads to avoid issues caused by excessive parallelism
-os.environ["OMP_NUM_THREADS"] = "1"
+def main():
+    project_root = Path(__file__).resolve().parents[2] 
+    model_path = project_root / "backend" / "static" / "models" / "plate" / "yolo11m.pt"
+    src_images_dir = project_root / "data" / "Plate" / "training" / "images"
+    dst_base_dir = project_root / "data" / "Number" / "training" / "images"
 
-import torch
-from ultralytics import YOLO
+    if not model_path.exists():
+        print(f"模型文件不存在: {model_path}")
+        sys.exit(1)
+    if not src_images_dir.exists():
+        print(f"来源图片目录不存在: {src_images_dir}")
+        sys.exit(1)
 
-print("CUDA available:", torch.cuda.is_available())
-print("GPU count:", torch.cuda.device_count())
-if torch.cuda.is_available():
-    print("GPU name:", torch.cuda.get_device_name(0))
+    try:
+        from ultralytics import YOLO
+    except Exception as e:
+        print("需要安装 ultralytics: pip install ultralytics Pillow")
+        raise
 
+    # 加载模型
+    model = YOLO(str(model_path))
 
-# Load model (local .pt file)
-model = YOLO("backend/static/models/best.pt")
+    exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+    image_paths = [p for p in src_images_dir.rglob("*") if p.suffix.lower() in exts]
 
-# New: View model class mapping
-try:
-    names = model.names  # ultralytics usually exposes names (dict or list)
-except Exception:
-    names = None
-print("Model class names:", names)
+    if not image_paths:
+        print("未找到任何图片。")
+        return
 
-# Find possible plate class indices (name contains 'plate' or 'license')
-plate_idxs = []
-if isinstance(names, dict):
-    plate_idxs = [i for i, n in names.items() if isinstance(n, str) and ('plate' in n.lower() or 'license' in n.lower())]
-elif isinstance(names, (list, tuple)):
-    plate_idxs = [i for i, n in enumerate(names) if isinstance(n, str) and ('plate' in n.lower() or 'license' in n.lower())]
+    total_crops = 0
+    for img_path in tqdm(image_paths, desc="Processing images"):
+        rel = img_path.relative_to(src_images_dir)
+        out_dir = dst_base_dir / rel.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-print("Detected plate class indices:", plate_idxs)
+        img = Image.open(img_path).convert("RGB")
+        w, h = img.size
 
-# Unified device configuration ("cpu" or 0)
-device = 0 if torch.cuda.is_available() else "cpu"
+        # 运行检测（可按需调整 imgsz/conf）
+        results = model(str(img_path), imgsz=1280, conf=0.25, verbose=False)
 
-# If plate class indices are found, use the classes parameter to detect only plates
-if plate_idxs:
-    results = model.predict(source="data/test_images", device=device, save=True, classes=plate_idxs, conf=0.25)
-else:
-    # No plate class found, the model may not be trained for plates; need to change weights or retrain
-    print("No plate class found in model.names — the model likely isn't trained for plates.")
-    results = model.predict(source="data/test_images", device=device, save=True, conf=0.25)
+        # results 可能为列表，取第一个结果
+        if not results:
+            continue
+        res = results[0]
+        boxes = getattr(res, "boxes", None)
+        if boxes is None or len(boxes) == 0:
+            continue
 
-for r in results:
-    print(r.path)
-    if hasattr(r, 'boxes') and r.boxes is not None:
-        print(r.boxes.xyxy, r.boxes.conf)
+        # boxes.xyxy -> tensor of [N,4]
+        xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes, "xyxy") else []
+        for i, box in enumerate(xyxy, start=1):
+            xmin, ymin, xmax, ymax = box[:4]
+            # clamp
+            xmin = max(0, int(round(xmin)))
+            ymin = max(0, int(round(ymin)))
+            xmax = min(w, int(round(xmax)))
+            ymax = min(h, int(round(ymax)))
+            if xmax <= xmin or ymax <= ymin:
+                continue
+
+            crop = img.crop((xmin, ymin, xmax, ymax))
+            out_name = f"{img_path.stem}__crop{i}{img_path.suffix.lower()}"
+            out_path = out_dir / out_name
+            crop.save(out_path)
+            total_crops += 1
+
+    print(f"处理完成，生成裁剪图片数量: {total_crops}")
+
+if __name__ == "__main__":
+    main()
