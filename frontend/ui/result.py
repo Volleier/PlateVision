@@ -2,12 +2,13 @@ import streamlit as st
 import time
 import requests
 from io import BytesIO
-from core.utils import compute_metrics  
 
 def render_result_column(uploaded_image, config, service):
     """
-    Render the result column based on the uploaded image.
-    uploaded_image: UploadedFile or None
+    - 仅在点击 Generate Recognition 时才发送到后端
+    - UI 仅包含：一行状态消息（在进度条上方）、进度条、以及错误消息（在进度条下方，正常不显示）
+    - 进度由三段组成：detector / extractor / reader 各占 1/3
+    - 完成后通过 /api/send/<file_id> 获取并展示图片
     """
     st.subheader("Result")
 
@@ -16,200 +17,206 @@ def render_result_column(uploaded_image, config, service):
         return
 
     if st.button("Generate Recognition"):
-        if uploaded_image is None:
-            st.error("Please upload an image first.")
-        else:
-            models = config.get("models", {}) or {}
-            options = config.get("options", {}) or {}
-            final_config = service.build_config(
-                plate_model=models.get("plate_model"),
-                number_model=models.get("number_model"),
-                **options
-            )
+        models = config.get("models", {}) or {}
+        options = config.get("options", {}) or {}
+        final_config = service.build_config(
+            plate_model=models.get("plate_model"),
+            number_model=models.get("number_model"),
+            **options
+        )
 
-            st.write("Sending config to backend:")
-            st.json(final_config)
+        status_msg = st.empty()
+        progress = st.progress(0)
+        error_box = st.empty()
 
-            try:
-                with st.spinner("Processing..."):
-                    result = service.process_image(uploaded_image, config=final_config)
-                st.success("Done")
-                st.subheader("Result")
-                st.json(result)
-            except Exception as e:
-                st.error(f"Processing failed: {e}")
-                st.write("Details:", str(e))
-        return
+        status_msg.info("Submitting job to backend...")
+        error_box.empty()
 
-    # Submit to backend/service for processing (ModelService should upload the image and return JSON containing file_id)
-    with st.spinner("Submitting image and requesting backend processing..."):
         try:
-            result = service.process_image(uploaded_image, config=config)
+            resp = service.process_image(uploaded_image, config=final_config)
         except Exception as e:
-            st.error(f"Failed to submit processing request: {e}")
+            status_msg.error("Submission failed")
+            error_box.error(f"{e}")
+            progress.progress(100)
             return
-    st.success("Processing request submitted. Waiting for backend result...")
 
-    # Try to find file_id in the response (adapt to different implementations)
-    file_id = None
-    if isinstance(result, dict):
-        # Common fields: file_id, id, result.file_id
-        file_id = result.get("file_id") or result.get("id")
-        if not file_id:
-            nested = result.get("result") or result.get("data") or {}
-            if isinstance(nested, dict):
-                file_id = nested.get("file_id") or nested.get("id")
+        file_id = None
+        job_id = None
+        task_url = None
+        if isinstance(resp, dict):
+            file_id = resp.get("file_id") or resp.get("id")
+            job_id = resp.get("job_id")
+            task_url = resp.get("task_url")
+            if task_url and task_url.startswith("/"):
+                backend_base = (final_config.get("backend_url") or final_config.get("api_url") or "http://localhost:5000").rstrip("/")
+                task_url = backend_base + task_url
 
-    # If no file_id but result_image is returned directly (synchronous processing), display it
-    if not file_id:
-        if isinstance(result, dict) and result.get("result") and isinstance(result["result"], dict):
-            ri = result["result"].get("result_image") or result["result"].get("image")
-            if ri:
-                try:
-                    st.image(ri, caption="Processed result (sync)", width="stretch")
-                except Exception:
-                    st.write("Processing finished, but cannot preview the returned result:", ri)
+        def steps_percent(steps_dict):
+            step_order = ["detector", "extractor", "reader"]
+            if not isinstance(steps_dict, dict):
+                return 0
+            completed = sum(1 for s in step_order if steps_dict.get(s, {}).get("status") == "ok")
+            # 每步各占 1/3
+            return int((completed / len(step_order)) * 100)
+
+        backend_base = (final_config.get("backend_url") or final_config.get("api_url") or "http://localhost:5000").rstrip("/")
+        send_url = f"{backend_base}/api/send/{file_id}" if file_id else None
+
+        # Poll task endpoint if available
+        if task_url or job_id:
+            status_msg.info("Job accepted, waiting for backend processing...")
+            poll_url = task_url if task_url else f"{backend_base}/api/tasks/{job_id}"
+
+            if not poll_url:
+                status_msg.error("No poll URL available for backend job.")
+                error_box.error("Cannot poll backend task (missing URL).")
+                progress.progress(100)
                 return
-        if isinstance(result, bytes):
-            st.image(BytesIO(result), caption="Processed result (bytes)", width="stretch")
+
+            max_attempts = 120
+            delay = 1.0
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    r = requests.get(poll_url, timeout=6)
+                except Exception:
+                    status_msg.info(f"Waiting for task status... ({attempt}/{max_attempts})")
+                    time.sleep(delay)
+                    continue
+
+                content_type = r.headers.get("content-type", "")
+                j = None
+                if "application/json" in content_type:
+                    try:
+                        j = r.json()
+                    except Exception:
+                        j = None
+
+                if isinstance(j, dict):
+                    # 更新进度
+                    pct = steps_percent(j.get("steps", {}))
+                    progress.progress(pct)
+                    if j.get("status") == "done" or j.get("status") == "ok":
+                        progress.progress(100)
+                        status_msg.success("Processing complete")
+                        # try fetch and display image
+                        if file_id:
+                            try:
+                                rr = requests.get(f"{backend_base}/api/send/{file_id}", timeout=10)
+                                ctype = rr.headers.get("content-type", "")
+                                if rr.status_code == 200 and ctype.startswith("image/"):
+                                    status_msg.info("Displaying result image")
+                                    st.image(BytesIO(rr.content))
+                                    return
+                                else:
+                                    # maybe send returned json error
+                                    try:
+                                        jj = rr.json()
+                                        error_box.error(str(jj))
+                                    except Exception:
+                                        error_box.error("Processing finished but no image was returned.")
+                                    return
+                            except Exception as e:
+                                error_box.error(f"Failed to fetch result image: {e}")
+                                return
+                        return
+
+                    if j.get("status") in ("pending", "processing", "accepted"):
+                        status_msg.info(f"Backend processing... ({attempt}/{max_attempts})")
+                        time.sleep(delay)
+                        continue
+
+                # fallback wait
+                time.sleep(delay)
+
+            status_msg.error("Timed out waiting for backend task to finish.")
+            error_box.error("Task did not finish in time. Please try again later.")
+            progress.progress(100)
             return
-        # Fallback: display returned text/structure
-        st.write(result)
+
+        # If only file_id present (no job_id/task), poll /api/send/<file_id>
+        if file_id:
+            status_msg.info("Submitted, waiting for processing result...")
+            max_attempts = 120
+            delay = 1.0
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    r = requests.get(f"{backend_base}/api/send/{file_id}", timeout=8)
+                except Exception:
+                    status_msg.info(f"Waiting for result... ({attempt}/{max_attempts})")
+                    time.sleep(delay)
+                    continue
+
+                content_type = r.headers.get("content-type", "")
+                if "application/json" in content_type:
+                    try:
+                        j = r.json()
+                    except Exception:
+                        j = None
+                    if isinstance(j, dict):
+                        if j.get("status") in ("pending", "processing"):
+                            pct = steps_percent(j.get("steps", {}))
+                            progress.progress(pct)
+                            status_msg.info(f"Backend processing... ({attempt}/{max_attempts})")
+                            time.sleep(delay)
+                            continue
+                        if j.get("status") in ("done", "ok"):
+                            progress.progress(100)
+                            status_msg.success("Processing complete")
+                            # try to fetch image once more (api/send may now return image)
+                            try:
+                                rr = requests.get(f"{backend_base}/api/send/{file_id}", timeout=10)
+                                ctype = rr.headers.get("content-type", "")
+                                if rr.status_code == 200 and ctype.startswith("image/"):
+                                    st.image(BytesIO(rr.content))
+                                    return
+                                else:
+                                    error_box.error("Processing finished but no image available.")
+                                    return
+                            except Exception as e:
+                                error_box.error(f"Failed to fetch result image: {e}")
+                                return
+                        status_msg.error("Processing failed")
+                        error_box.error(str(j))
+                        progress.progress(100)
+                        return
+                else:
+                    # Direct image returned
+                    if r.status_code == 200 and content_type.startswith("image/"):
+                        progress.progress(100)
+                        status_msg.success("Processing complete")
+                        st.image(BytesIO(r.content))
+                        return
+                    else:
+                        # unexpected non-json, non-image
+                        status_msg.error("Unexpected response from backend")
+                        error_box.error(f"Status {r.status_code}")
+                        progress.progress(100)
+                        return
+
+                time.sleep(delay)
+
+            status_msg.error("Timed out waiting for backend result.")
+            error_box.error("Processing did not complete in time. Please try again later.")
+            progress.progress(100)
+            return
+
+        # Fallback: resp indicates immediate success
+        if isinstance(resp, dict) and resp.get("status") in ("ok", "done"):
+            progress.progress(100)
+            status_msg.success("Processing complete")
+            # try fetch image if file_id present
+            if file_id:
+                try:
+                    rr = requests.get(f"{backend_base}/api/send/{file_id}", timeout=10)
+                    if rr.status_code == 200 and rr.headers.get("content-type","").startswith("image/"):
+                        st.image(BytesIO(rr.content))
+                except Exception:
+                    pass
+            return
+
+        status_msg.error("Unexpected backend response")
+        error_box.error(str(resp))
+        progress.progress(100)
         return
 
-    # If file_id is present: poll backend /api/send/<file_id> to get final image
-    backend_base = None
-    if isinstance(config, dict):
-        backend_base = config.get("backend_url") or config.get("api_url")
-    else:
-        backend_base = getattr(config, "backend_url", None) or getattr(config, "api_url", None)
-    if not backend_base:
-        backend_base = "http://localhost:5000"
-    backend_base = backend_base.rstrip("/")
-
-    send_url = f"{backend_base}/api/send/{file_id}"
-
-    # If backend returned a job_id (async), prefer polling task/status endpoint first
-    job_id = result.get("job_id") if isinstance(result, dict) else None
-    task_url = None
-    if job_id:
-        # backend may return a relative task_url
-        task_url = result.get("task_url") or f"/api/tasks/{job_id}"
-        if task_url.startswith("/"):
-            task_url = backend_base + task_url
-
-    url = send_url
-
-    # Polling parameters and UI placeholders (used by task polling and final polling)
-    max_attempts = 30
-    delay = 1.0
-
-    # Progress bar and status text (initialized early so task polling can use them)
-    progress = st.progress(0)
-    status = st.empty()
-    detail = st.empty()  # kept in case you want to display extra info later
-
-    # Step order is used to compute progress percentage; per-step textual output is intentionally omitted.
-    step_order = ["detector", "extractor", "reader"]
-
-    # If we have a task_url, poll it first until done, then call send_url to fetch the image
-    if task_url:
-        status_text = st.empty()
-        for attempt in range(1, max_attempts + 1):
-            try:
-                resp_task = requests.get(task_url, timeout=6)
-            except requests.RequestException as e:
-                status_text.info(f"Waiting for task status (connect): {e} ({attempt}/{max_attempts})")
-                time.sleep(delay)
-                continue
-
-            if resp_task.status_code in (200, 202) and resp_task.headers.get("content-type", "").startswith("application/json"):
-                try:
-                    j = resp_task.json()
-                except Exception:
-                    status_text.info(f"Waiting for task status... ({attempt}/{max_attempts})")
-                    time.sleep(delay)
-                    continue
-
-                # task endpoint signals done explicitly
-                if isinstance(j, dict) and j.get("status") == "done":
-                    # proceed to request final image from send_url
-                    break
-                if isinstance(j, dict) and j.get("status") in ("pending", "processing", "accepted"):
-                    status_text.info(f"Backend processing... ({attempt}/{max_attempts}) waited {int((attempt-1)*delay)}s")
-    # after task done (or if no job_id), request the image via send_url
-    # polling parameters and UI placeholders were initialized above
-
-    # after task done (or if no job_id), request the image via send_url
-    max_attempts = 30
-    delay = 1.0
-
-    # Progress bar and status text
-    progress = st.progress(0)
-    status = st.empty()
-    detail = st.empty()  # kept in case you want to display extra info later
-
-    # Step order is used to compute progress percentage; per-step textual output is intentionally omitted.
-    step_order = ["detector", "extractor", "reader"]
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            resp = requests.get(url, timeout=8)
-        except requests.RequestException as e:
-            status.info(f"Waiting for result (connecting): {e} ({attempt}/{max_attempts})")
-            time.sleep(delay)
-            continue
-
-        # If backend returns pending JSON, parse steps and update progress only
-        content_type = resp.headers.get("content-type", "")
-        if resp.status_code == 202 or ("application/json" in content_type and resp.status_code == 200):
-            try:
-                j = resp.json()
-            except Exception:
-                status.info(f"Waiting for result... ({attempt}/{max_attempts})")
-                time.sleep(delay)
-                continue
-
-            if isinstance(j, dict) and j.get("status") in ("pending", "processing"):
-                steps = j.get("steps", {})
-                # Calculate the number of completed steps
-                completed = sum(1 for s in step_order if steps.get(s, {}).get("status") == "ok")
-                total = len(step_order)
-                percent = int((completed / total) * 100)
-                # Update progress bar (do not display per-step lines)
-                progress.progress(percent)
-                status.info(f"Backend still processing... ({attempt}/{max_attempts}) waited {int((attempt-1)*delay)}s")
-                time.sleep(delay)
-                continue
-
-        # Force the progress bar to fill up and display when receiving an image
-        if resp.status_code == 200 and content_type.startswith("image"):
-            progress.progress(100)
-            status.success("Processing complete, displaying results.")
-            st.image(BytesIO(resp.content), caption="Processed result from server", width="stretch")
-            break
-
-        # If JSON is returned (error or info), parse and display
-        if "application/json" in content_type or resp.headers.get("content-type", "").startswith("application/json"):
-            try:
-                j = resp.json()
-                # If backend returns status: pending with 200, continue retrying
-                if isinstance(j, dict) and j.get("status") == "pending":
-                    status.info(f"Backend still processing... ({attempt}/{max_attempts})")
-                    time.sleep(delay)
-                    continue
-                # Otherwise display error/info
-                status.error(f"Failed to retrieve processing result: {j}")
-            except Exception:
-                status.error(f"Failed to retrieve processing result, status code: {resp.status_code}")
-            # Set progress to complete on error (indicates polling ended)
-            progress.progress(100)
-            break
-
-        # Other cases: show error
-        status.error(f"Unable to get processing result, status code: {resp.status_code}, content-type: {content_type}")
-        progress.progress(100)
-        break
-    else:
-        status.error("Timed out waiting for backend to return the processed image. Please try again later.")
-        progress.progress(100)
+    st.info("Upload an image and click 'Generate Recognition' to start processing.")
