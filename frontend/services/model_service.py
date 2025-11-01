@@ -13,6 +13,30 @@ class ModelService:
         self.backend_url = backend_url or "http://localhost:5000"
         self.timeout = timeout
 
+    def build_config(self, plate_model: Optional[str] = None, number_model: Optional[str] = None, **kwargs) -> dict:
+        """
+        构建可扩展的 config dict。
+        - 将所选模型放在 "models" 字段中（例如 {"models": {"plate_model": "...", "number_model": "..."}}）
+        - 额外参数会放入 "options" 字段，方便后续扩展（例如阈值、裁剪参数等）
+        用法：config = service.build_config(plate_model="yolo_plate_v1", number_model="crnn_num_v2", top_k=5)
+        """
+        cfg: dict = {}
+        models: dict = {}
+
+        if plate_model:
+            models["plate_model"] = plate_model
+        if number_model:
+            models["number_model"] = number_model
+
+        if models:
+            cfg["models"] = models
+
+        if kwargs:
+            # 将任意扩展参数放到 options 下，保持结构清晰且容易扩展
+            cfg.setdefault("options", {}).update(kwargs)
+
+        return cfg
+
     def _health_ok(self) -> bool:
         """简易健康检查；尝试 /health 和 /api/health 两个路径以兼容后端可能的路由。"""
         try:

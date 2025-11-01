@@ -6,8 +6,9 @@ import tempfile
 from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
 import logging
-from typing import Any
+from typing import Any, Optional
 import time
+import json
 
 try:
     import ulid
@@ -39,8 +40,8 @@ def allowed_filename(filename: str) -> bool:
     ext = os.path.splitext(filename)[1].lower()
     return ext in _get_allowed_ext()
 
-def _task_wrapper(file_id: str, job_id: str):
-    _logger.info("worker: start processing file_id=%s job_id=%s", file_id, job_id)
+def _task_wrapper(file_id: str, job_id: str, config: Optional[dict] = None):
+    _logger.info("worker: start processing file_id=%s job_id=%s config=%s", file_id, job_id, str(config))
     def cb(step: str, status: str, info: Any = None):
         try:
             entry = _jobs.get(job_id)
@@ -53,8 +54,8 @@ def _task_wrapper(file_id: str, job_id: str):
             _logger.exception("worker: progress callback failed for job_id=%s step=%s", job_id, step)
 
     try:
-        # 调用 processing_image 并传入回调
-        result = processing_image(file_id, progress_callback=cb)
+        # 调用 processing_image 并传入回调与 config
+        result = processing_image(file_id, progress_callback=cb, config=config)
         _logger.info("worker: finished processing file_id=%s job_id=%s status=%s", file_id, job_id, result.get("status") if isinstance(result, dict) else None)
         return result
     except Exception:
@@ -109,6 +110,19 @@ def upload():
         current_app.logger.exception("create upload dir failed")
         return jsonify({"error": "cannot create upload dir", "detail": str(e)}), 500
 
+    # 解析前端可选传入的 config 字段（JSON）
+    config = None
+    raw_config = request.form.get("config") or request.form.get("config_json")
+    if raw_config:
+        try:
+            config = json.loads(raw_config)
+            # 记录原始 JSON 字符串与美化后的解析结果，确保完整可见（注意隐私/敏感信息）
+            current_app.logger.info("Upload raw config: %s", raw_config)
+            current_app.logger.info("Upload parsed config: %s", json.dumps(config, ensure_ascii=False, indent=2))
+        except Exception as e:
+            current_app.logger.warning("Failed to parse config JSON from upload: %s err=%s", raw_config, e)
+            config = None
+
     # 优先读取 "file" 字段（前端发送的键名）
     file = (
         request.files.get("file")
@@ -126,9 +140,28 @@ def upload():
     if not allowed_filename(orig_name):
         return jsonify({"error": "file type not allowed", "ext": ext}), 400
 
+    # 兼容不同 ulid 库实现：尝试多种常见接口，失败则回退到 uuid4
+    file_id = None
     if ulid is not None:
-        file_id = ulid.new().str
-    else:
+        try:
+            if hasattr(ulid, "new"):
+                # ulid-py 等：ulid.new() -> ULID obj，str(...) 可获取文本表示
+                file_id = str(ulid.new())
+            elif hasattr(ulid, "ULID"):
+                # 某些实现提供 ULID 类构造
+                try:
+                    file_id = str(ulid.ULID())
+                except Exception:
+                    file_id = None
+            elif hasattr(ulid, "generate"):
+                # 其他实现可能有 generate()
+                file_id = str(ulid.generate())
+            else:
+                file_id = None
+        except Exception:
+            _logger.exception("ulid generation failed, fallback to uuid4")
+            file_id = None
+    if not file_id:
         file_id = uuid4().hex
     final_name = f"{file_id}{ext}"
     final_path = upload_dir / final_name
@@ -180,7 +213,8 @@ def upload():
         # 无 executor，同步处理
         current_app.logger.warning("App.executor not found, running processing synchronously for id=%s", file_id)
         try:
-            result = processing_image(file_id)
+            # 将解析到的 config 传递给 processing_image
+            result = processing_image(file_id, config=config)
             return jsonify({
                 "file_id": file_id,
                 "filename": final_name,
@@ -194,20 +228,20 @@ def upload():
     
     # 有 executor，异步提交
     try:
-        # 优先使用 submit_stored，否则用 submit
+        # 优先使用 submit_stored，否则用 submit；传入 config 到 worker
         if hasattr(executor, "submit_stored"):
-            future = executor.submit_stored(job_id, _task_wrapper, file_id, job_id)
+            future = executor.submit_stored(job_id, _task_wrapper, file_id, job_id, config)
         else:
-            future = executor.submit(_task_wrapper, file_id, job_id)
+            future = executor.submit(_task_wrapper, file_id, job_id, config)
         
         try:
             future.add_done_callback(lambda fut, jid=job_id: _task_done_callback(fut, jid))
         except Exception:
             _logger.warning("add_done_callback failed for job_id=%s", job_id)
         
-        # 关键修复：存储为字典结构，包含 future 和 file_id
-        _jobs[job_id] = {"future": future, "file_id": file_id}
-        _logger.info("Submitted processing task, file_id=%s, job_id=%s", file_id, job_id)
+        # 存储为字典结构，包含 future、file_id 与接收到的 config
+        _jobs[job_id] = {"future": future, "file_id": file_id, "config": config}
+        _logger.info("Submitted processing task, file_id=%s, job_id=%s config=%s", file_id, job_id, str(config))
         
         return jsonify({
             "file_id": file_id,
@@ -220,7 +254,7 @@ def upload():
         current_app.logger.exception("submit task failed for file_id=%s", file_id)
         # 回退同步执行
         try:
-            result = processing_image(file_id)
+            result = processing_image(file_id, config=config)
             return jsonify({
                 "file_id": file_id,
                 "filename": final_name,

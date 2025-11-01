@@ -2,7 +2,7 @@ import streamlit as st
 import time
 import requests
 from io import BytesIO
-from core.utils import compute_metrics  # keep import (enable if you need statistical functions)
+from core.utils import compute_metrics  
 
 def render_result_column(uploaded_image, config, service):
     """
@@ -13,6 +13,32 @@ def render_result_column(uploaded_image, config, service):
 
     if uploaded_image is None:
         st.info("Please upload an image before generating results.")
+        return
+
+    if st.button("Generate Recognition"):
+        if uploaded_image is None:
+            st.error("Please upload an image first.")
+        else:
+            models = config.get("models", {}) or {}
+            options = config.get("options", {}) or {}
+            final_config = service.build_config(
+                plate_model=models.get("plate_model"),
+                number_model=models.get("number_model"),
+                **options
+            )
+
+            st.write("Sending config to backend:")
+            st.json(final_config)
+
+            try:
+                with st.spinner("Processing..."):
+                    result = service.process_image(uploaded_image, config=final_config)
+                st.success("Done")
+                st.subheader("Result")
+                st.json(result)
+            except Exception as e:
+                st.error(f"Processing failed: {e}")
+                st.write("Details:", str(e))
         return
 
     # Submit to backend/service for processing (ModelService should upload the image and return JSON containing file_id)

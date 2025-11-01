@@ -76,8 +76,12 @@ def render_sidebar():
 
     # Return configuration dict for main app
     return {
-        "max_length": max_length,
-        "min_length": min_length,
-        "plate_model_option": plate_model_option,
-        "number_model_option": number_model_option
+        "models": {
+            "plate_model": plate_model_option,
+            "number_model": number_model_option
+        },
+        "options": {
+            "max_length": max_length,
+            "min_length": min_length
+        }
     }
