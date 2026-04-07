@@ -10,6 +10,7 @@ import json
 import tempfile
 import time
 import logging
+import threading
 
 try:
     import ulid as _ulid  # optional
@@ -28,8 +29,33 @@ ALLOWED_EXT = None
 
 # 简单内存 registry（注意：重启会丢失）# 结构：_jobs[job_id] = {"future": Future, "file_id": file_id}
 _jobs = {}
+_jobs_lock = threading.RLock()
 
 _logger = logging.getLogger("App")
+
+def _get_job(job_id: str):
+    with _jobs_lock:
+        return _jobs.get(job_id)
+
+def _set_job(job_id: str, value: dict):
+    with _jobs_lock:
+        _jobs[job_id] = value
+
+def _update_job(job_id: str, **kwargs):
+    with _jobs_lock:
+        entry = _jobs.get(job_id)
+        if not isinstance(entry, dict):
+            entry = {}
+            _jobs[job_id] = entry
+        entry.update(kwargs)
+        return entry
+
+def _find_job_by_file_id(file_id: str):
+    with _jobs_lock:
+        for jid, entry in _jobs.items():
+            if isinstance(entry, dict) and entry.get("file_id") == file_id:
+                return jid, entry
+    return None, None
 
 def _get_allowed_ext():
     global ALLOWED_EXT
@@ -45,12 +71,13 @@ def _task_wrapper(file_id: str, job_id: str, config: Optional[dict] = None):
     _logger.info("worker: start processing file_id=%s job_id=%s config=%s", file_id, job_id, str(config))
     def cb(step: str, status: str, info: Any = None):
         try:
-            entry = _jobs.get(job_id)
-            if entry is None:
-                return
-            steps = entry.setdefault("steps", {})
-            steps[step] = {"status": status, "info": (info if isinstance(info, dict) else None), "updated_at": time.time()}
-            entry["last_update"] = time.time()
+            with _jobs_lock:
+                entry = _jobs.get(job_id)
+                if entry is None:
+                    return
+                steps = entry.setdefault("steps", {})
+                steps[step] = {"status": status, "info": (info if isinstance(info, dict) else None), "updated_at": time.time()}
+                entry["last_update"] = time.time()
         except Exception:
             _logger.exception("worker: progress callback failed for job_id=%s step=%s", job_id, step)
 
@@ -97,14 +124,15 @@ def _task_done_callback(fut, job_id: str):
                 result_image = internal.get("annotated_image") or internal.get("exported_image") or None
 
             # 存储结果图片路径到 _jobs（如果不存在则创建占位）
-            entry = _jobs.get(job_id)
-            if entry is None:
-                _jobs[job_id] = {"future": fut, "file_id": file_id, "config": None}
-                entry = _jobs[job_id]
-            if isinstance(entry, dict):
-                entry["result_image"] = result_image
-                entry["result"] = res
-                entry["finished_at"] = time.time()
+            with _jobs_lock:
+                entry = _jobs.get(job_id)
+                if entry is None:
+                    _jobs[job_id] = {"future": fut, "file_id": file_id, "config": None}
+                    entry = _jobs[job_id]
+                if isinstance(entry, dict):
+                    entry["result_image"] = result_image
+                    entry["result"] = res
+                    entry["finished_at"] = time.time()
                 _logger.info("main: stored result_image for job_id=%s file_id=%s: %s", job_id, file_id, result_image)
     except Exception:
         _logger.exception("main: task done callback raised for job_id=%s", job_id)
@@ -212,7 +240,7 @@ def upload():
     
     executor: Any = getattr(current_app, "executor", None)
     # 先在 _jobs 中创建占位，避免 worker callback 在 future 还没写入时找不到 entry（race）
-    _jobs[job_id] = {"future": None, "file_id": file_id, "config": config, "created_at": time.time()}
+    _set_job(job_id, {"future": None, "file_id": file_id, "config": config, "created_at": time.time()})
 
     if executor is None:
         # 无 executor，同步处理
@@ -221,8 +249,7 @@ def upload():
             # 将解析到的 config 传递给 processing_image
             result = processing_image(file_id, config=config)
             # 同步执行完成，保存结果到 _jobs 并返回
-            _jobs[job_id]["result"] = result
-            _jobs[job_id]["finished_at"] = time.time()
+            _update_job(job_id, result=result, finished_at=time.time())
             return jsonify({"file_id": file_id, "job_id": job_id, "result": result}), 200
         except Exception as e2:
             current_app.logger.exception("sync processing failed for file_id=%s", file_id)
@@ -242,8 +269,7 @@ def upload():
             _logger.warning("add_done_callback failed for job_id=%s", job_id)
         
         # 存储为字典结构，包含 future、file_id 与接收到的 config
-        _jobs[job_id]["future"] = future
-        _jobs[job_id]["submitted_at"] = time.time()
+        _update_job(job_id, future=future, submitted_at=time.time())
         _logger.info("Submitted processing task, file_id=%s, job_id=%s config=%s", file_id, job_id, str(config))
         
         return jsonify({
@@ -258,8 +284,7 @@ def upload():
         # 回退同步执行
         try:
             result = processing_image(file_id, config=config)
-            _jobs[job_id]["result"] = result
-            _jobs[job_id]["finished_at"] = time.time()
+            _update_job(job_id, result=result, finished_at=time.time())
             return jsonify({"file_id": file_id, "job_id": job_id, "result": result}), 200
         except Exception as e2:
             current_app.logger.exception("sync processing also failed for file_id=%s", file_id)
@@ -268,16 +293,15 @@ def upload():
 @bp.route('/tasks/<job_id>', methods=['GET'])
 def task_status(job_id):
     _logger.info("task status requested: job_id=%s remote=%s", job_id, request.remote_addr)
-    info = _jobs.get(job_id)
+    info = _get_job(job_id)
     if info is None:
         # Try to be forgiving: maybe caller passed a file_id instead of a job_id.
         try:
-            for jid, entry in _jobs.items():
-                if isinstance(entry, dict) and entry.get("file_id") == job_id:
-                    _logger.info("task_status: resolved file_id %s -> job_id %s", job_id, jid)
-                    info = entry
-                    job_id = jid
-                    break
+            jid, entry = _find_job_by_file_id(job_id)
+            if jid is not None:
+                _logger.info("task_status: resolved file_id %s -> job_id %s", job_id, jid)
+                info = entry
+                job_id = jid
         except Exception:
             _logger.exception("task_status: error while attempting file_id lookup for %s", job_id)
 
@@ -296,10 +320,10 @@ def task_status(job_id):
     # 检查 fut 是否为 None（防止类型错误）
     if fut is None:
         # 任务可能尚未提交或为同步已完成，返回当前字典中的状态/结果
-        entry = _jobs.get(job_id, {})
+        entry = _get_job(job_id) or {}
         if "result" in entry:
             return jsonify({"status": "done", "result": entry.get("result"), "file_id": file_id}), 200
-        _logger.error("future is None for job_id=%s", job_id)
+        _logger.info("future is None for job_id=%s, treating as pending", job_id)
         return jsonify({"status": "pending", "file_id": file_id}), 202
     
     if fut.done():

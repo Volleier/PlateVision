@@ -21,6 +21,40 @@ _logger = logging.getLogger("App")
 # 缓存按路径的模型实例，允许根据 config 加载不同模型
 _MODELS: Dict[str, Any] = {}
 
+def _resolve_plate_model_path(config: Optional[Dict[str, Any]]) -> Path:
+    """Resolve plate model from config, supporting frontend nested model fields."""
+    repo_root = Path(__file__).resolve().parents[2]
+    static_models_dir = repo_root / "backend" / "static" / "models"
+    plate_models_dir = static_models_dir / "plate"
+
+    model_spec = None
+    if isinstance(config, dict):
+        models_cfg = config.get("models")
+        if isinstance(models_cfg, dict):
+            model_spec = models_cfg.get("plate_model")
+        model_spec = model_spec or config.get("model_path") or config.get("model")
+
+    if not model_spec:
+        return Path(cfg.PLATE_MODEL)
+
+    cand = Path(str(model_spec))
+    if cand.exists():
+        return cand
+
+    name = str(model_spec).strip()
+    names_to_try = [name]
+    if not name.lower().endswith(".pt"):
+        names_to_try.append(f"{name}.pt")
+
+    for n in names_to_try:
+        for base in (plate_models_dir, static_models_dir):
+            p = base / n
+            if p.exists():
+                return p
+
+    _logger.warning("Requested plate model '%s' not found, falling back to cfg.PLATE_MODEL", model_spec)
+    return Path(cfg.PLATE_MODEL)
+
 def _get_model(model_path: Path):
     """按模型文件路径缓存并返回 YOLO 实例"""
     key = str(model_path)
@@ -148,27 +182,7 @@ def detect_image(file_id: str, config: Optional[Dict[str, Any]] = None) -> Dict[
     conf = cfg.DEFAULT_CONF
     imgsz = cfg.DEFAULT_IMGSZ
 
-    # 支持通过 config 指定 model 或 model_path，优先使用绝对/存在路径或 static/models 下的名称
-    model_spec = None
-    if isinstance(config, dict):
-        model_spec = config.get("model_path") or config.get("model")
-
-    repo_root = Path(__file__).resolve().parents[2]
-    static_models_dir = repo_root / "backend" / "static" / "models"
-    if model_spec:
-        cand = Path(model_spec)
-        if cand.exists():
-            model_path = cand
-        else:
-            # 尝试 static/models 下的文件名
-            cand2 = static_models_dir / model_spec
-            if cand2.exists():
-                model_path = cand2
-            else:
-                _logger.warning("Requested model spec '%s' not found, falling back to cfg.PLATE_MODEL", model_spec)
-                model_path = Path(cfg.PLATE_MODEL)
-    else:
-        model_path = Path(cfg.PLATE_MODEL)
+    model_path = _resolve_plate_model_path(config)
     uploads_dir = Path(cfg.UPLOADS_DIR)
     results_dir = _default_results_dir()
 

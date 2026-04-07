@@ -21,7 +21,67 @@ except Exception as e:
 
 from pathlib import Path
 
-def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path] = None, input_path: Optional[Path] = None, model_path: Optional[Path] = None):
+def _resolve_number_model_path(config: Optional[Dict[str, Any]] = None) -> Path:
+    """Resolve number model from config, supporting frontend nested model fields."""
+    repo_root = Path(__file__).resolve().parents[2]
+    static_models_dir = repo_root / "backend" / "static" / "models"
+    number_models_dir = static_models_dir / "number"
+
+    model_spec = None
+    if isinstance(config, dict):
+        models_cfg = config.get("models")
+        if isinstance(models_cfg, dict):
+            model_spec = models_cfg.get("number_model")
+        model_spec = model_spec or config.get("model_path") or config.get("model")
+
+    if not model_spec:
+        return Path(cfg.NUMBER_MODEL)
+
+    cand = Path(str(model_spec))
+    if cand.exists():
+        return cand
+
+    name = str(model_spec).strip()
+    names_to_try = [name]
+    if not name.lower().endswith(".pt"):
+        names_to_try.append(f"{name}.pt")
+
+    for n in names_to_try:
+        for base in (number_models_dir, static_models_dir):
+            p = base / n
+            if p.exists():
+                return p
+
+    _logger.warning("Requested reader model '%s' not found, falling back to cfg.NUMBER_MODEL", model_spec)
+    return Path(cfg.NUMBER_MODEL)
+
+def _iou(a: Dict[str, Any], b: Dict[str, Any]) -> float:
+    ax1, ay1, ax2, ay2 = a["xmin"], a["ymin"], a["xmax"], a["ymax"]
+    bx1, by1, bx2, by2 = b["xmin"], b["ymin"], b["xmax"], b["ymax"]
+    inter_w = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    inter_h = max(0.0, min(ay2, by2) - max(ay1, by1))
+    inter = inter_w * inter_h
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, (ax2 - ax1)) * max(0.0, (ay2 - ay1))
+    area_b = max(0.0, (bx2 - bx1)) * max(0.0, (by2 - by1))
+    union = area_a + area_b - inter
+    return (inter / union) if union > 0 else 0.0
+
+def _dedupe_char_detections(detections: List[Dict[str, Any]], iou_thr: float = 0.45) -> List[Dict[str, Any]]:
+    """Suppress overlapping duplicate character boxes (class-agnostic), keep highest confidence."""
+    if not detections:
+        return []
+    by_conf = sorted(detections, key=lambda d: float(d.get("confidence", 0.0)), reverse=True)
+    kept: List[Dict[str, Any]] = []
+    for det in by_conf:
+        if any(_iou(det, k) >= iou_thr for k in kept):
+            continue
+        kept.append(det)
+    # Sort left-to-right for stable plate reading order
+    return sorted(kept, key=lambda d: (float(d.get("xmin", 0.0)), float(d.get("ymin", 0.0))))
+
+def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path] = None, input_path: Optional[Path] = None, model_path: Optional[Path] = None, min_keep_conf: Optional[float] = None, dedup_iou: float = 0.45):
     """
     执行 number 模型检测并在 results_dir 下保存 <stem>_pred.* 与 <stem>.json。
     默认 results_dir 使用 cfg.RESULTS_READER_DIR（reader 输出目录）。
@@ -81,10 +141,10 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
                         clss = getattr(boxes, "cls", None)
                         confs_arr = confs.cpu().numpy() if confs is not None else [0.0] * len(xyxy)
                         clss_arr = clss.cpu().numpy() if clss is not None else [0] * len(xyxy)
-                        MIN_KEEP_CONF = 0.33
+                        min_conf = min_keep_conf if min_keep_conf is not None else max(0.45, float(conf))
                         for i, b in enumerate(xyxy):
                             conf_val = float(confs_arr[i]) if i < len(confs_arr) else 0.0
-                            if conf_val < MIN_KEEP_CONF:
+                            if conf_val < min_conf:
                                 continue
                             xmin, ymin, xmax, ymax = b.tolist()
                             cls_id = int(clss_arr[i]) if i < len(clss_arr) else 0
@@ -95,6 +155,7 @@ def detect_all(conf: float = 0.25, imgsz: int = 640, results_dir: Optional[Path]
                                 "class": cls_id,
                                 "name": str(names.get(cls_id, cls_id))
                             })
+                        detections = _dedupe_char_detections(detections, iou_thr=dedup_iou)
                 except Exception:
                     _logger.exception("Failed to parse number detection boxes for %s", img_path)
 
@@ -245,28 +306,24 @@ def read_image(file_id: str, config: Optional[Dict[str, Any]] = None) -> Dict[st
         conf = getattr(cfg, "DEFAULT_CONF", 0.25)
         imgsz = getattr(cfg, "DEFAULT_IMGSZ", 640)
 
-        # 支持通过 config 指定 number 模型
-        model_spec = None
-        if isinstance(config, dict):
-            model_spec = config.get("model_path") or config.get("model")
-        repo_root = Path(__file__).resolve().parents[2]
-        static_models_dir = repo_root / "backend" / "static" / "models"
-        model_path = None
-        if model_spec:
-            cand = Path(model_spec)
-            if cand.exists():
-                model_path = cand
-            else:
-                cand2 = static_models_dir / model_spec
-                if cand2.exists():
-                    model_path = cand2
-                else:
-                    _logger.warning("Requested reader model spec '%s' not found, falling back to cfg.NUMBER_MODEL", model_spec)
+        model_path = _resolve_number_model_path(config)
+
+        opts = config.get("options", {}) if isinstance(config, dict) and isinstance(config.get("options"), dict) else {}
+        min_keep_conf = opts.get("reader_min_conf", opts.get("min_conf", 0.45))
+        dedup_iou = opts.get("reader_dedup_iou", 0.45)
+        try:
+            min_keep_conf = float(min_keep_conf)
+        except Exception:
+            min_keep_conf = 0.45
+        try:
+            dedup_iou = float(dedup_iou)
+        except Exception:
+            dedup_iou = 0.45
         # 对每个 crop 调用本模块的 detect_all，传入本地的 conf/imgsz 与可选 model_path
         for crop_path in crops:
             try:
                 _logger.debug("plate_reader: running detect_all for crop=%s with conf=%s imgsz=%s model=%s", crop_path, conf, imgsz, model_path)
-                detect_all(conf=conf, imgsz=imgsz, results_dir=out_dir, input_path=Path(crop_path), model_path=model_path)
+                detect_all(conf=conf, imgsz=imgsz, results_dir=out_dir, input_path=Path(crop_path), model_path=model_path, min_keep_conf=min_keep_conf, dedup_iou=dedup_iou)
             except Exception:
                 _logger.exception("plate_reader: detect_all failed for crop=%s", crop_path)
 
