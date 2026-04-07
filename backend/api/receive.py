@@ -270,6 +270,18 @@ def task_status(job_id):
     _logger.info("task status requested: job_id=%s remote=%s", job_id, request.remote_addr)
     info = _jobs.get(job_id)
     if info is None:
+        # Try to be forgiving: maybe caller passed a file_id instead of a job_id.
+        try:
+            for jid, entry in _jobs.items():
+                if isinstance(entry, dict) and entry.get("file_id") == job_id:
+                    _logger.info("task_status: resolved file_id %s -> job_id %s", job_id, jid)
+                    info = entry
+                    job_id = jid
+                    break
+        except Exception:
+            _logger.exception("task_status: error while attempting file_id lookup for %s", job_id)
+
+    if info is None:
         _logger.warning("unknown job queried: job_id=%s", job_id)
         return jsonify({"error": "unknown job"}), 404
     

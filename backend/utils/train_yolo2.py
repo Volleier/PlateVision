@@ -168,7 +168,9 @@ def verify_weights_match(weights_path: Path):
 def main():
     parser = argparse.ArgumentParser(description="使用 data/yolo11m.pt 训练 Plate/training 数据集（YOLO 格式）")
     parser.add_argument("--weights", type=str, default=str(DEFAULT_WEIGHTS), help="预训练权重（默认 data/yolo11m.pt）")
-    parser.add_argument("--data", type=str, default=None, help="数据集 yaml（默认使用 Plate/training/dataset.yaml 并强制图片路径）")
+    # 默认使用 Number 数据集，如果需要训练 Plate 可传入相应 dataset.yaml
+    default_number_data = PROJECT_ROOT / "data" / "Number" / "training" / "dataset.yaml"
+    parser.add_argument("--data", type=str, default=str(default_number_data), help="数据集 yaml（默认使用 data/Number/training/dataset.yaml）")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--imgsz", type=int, default=640)
@@ -178,14 +180,10 @@ def main():
     parser.add_argument("--skip-check", action="store_true", help="跳过路径/权重校验（仅调试时使用）")
     args = parser.parse_args()
 
-    # 强制使用本地 yolo11m 权重（文件名和路径必须匹配）
+    # 使用用户指定的本地权重路径（允许任意本地文件路径）
     weights_path = Path(args.weights)
-    try:
-        same_file = weights_path.resolve() == DEFAULT_WEIGHTS.resolve()
-    except Exception:
-        same_file = False
-    if not same_file and weights_path.name != DEFAULT_WEIGHTS.name:
-        print(f"错误：训练必须使用本地权重 '{DEFAULT_WEIGHTS.name}'（路径: {DEFAULT_WEIGHTS}）。传入的权重: {args.weights}")
+    if not weights_path.exists():
+        print(f"错误：指定的权重文件不存在: {weights_path}")
         sys.exit(4)
 
     check_paths()
